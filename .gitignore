@@ -1,0 +1,23 @@
+# CMake and compiler outputs
+build/
+build*/
+cmake-build-*/
+/car_terminal
+*.o
+*.a
+*.so
+
+# Runtime outputs
+runtime/
+*.log
+*.csv
+
+# Editor and temporary files
+.vscode/
+.idea/
+*~
+*.swp
+
+# Local preservation copies
+backups/
+*.backup-*

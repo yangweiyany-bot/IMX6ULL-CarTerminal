@@ -1,0 +1,15 @@
+# IMX6ULL-CarTerminal installed simulation configuration.
+# These thresholds are demonstration parameters only, not vehicle diagnostic
+# or safety standards. Adjust output paths for the target deployment user.
+low_voltage_threshold_v=12.55
+high_temperature_threshold_c=40.0
+overspeed_threshold_kmh=120.0
+
+sample_count=10
+sampling_interval_ms=100
+queue_capacity=4
+
+# Paths are relative to this installed configuration file. With the standard
+# layout they resolve below the selected CMake installation prefix.
+log_file=@CAR_TERMINAL_INSTALL_LOG_PATH@
+csv_file=@CAR_TERMINAL_INSTALL_CSV_PATH@
