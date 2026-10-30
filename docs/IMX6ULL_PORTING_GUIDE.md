@@ -4,7 +4,7 @@
 
 ## 当前验证边界
 
-V2.2 已在 Ubuntu 24.04 / WSL2 的 x86-64 Linux 用户空间完成主机端验证。V2.3 增加安全信号退出与 CI 配置；V2.4 增加 Linux SocketCAN；V2.5 增加有限次数与连续监控；V2.6 增加大小轮转和可选 systemd 部署模板。本地验证结果以 README 和对应交付报告为准，GitHub Actions 在实际运行前不能标记为通过。
+V2.2 已在 Ubuntu 24.04 / WSL2 的 x86-64 Linux 用户空间完成主机端验证。V2.3 增加安全信号退出与 CI 配置；V2.4 增加 Linux SocketCAN；V2.5 增加有限次数与连续监控；V2.6 增加大小轮转和可选 systemd 部署；V2.7 增加严格的 ARM toolchain、构建脚本和 ELF/sysroot 检查。本地验证结果以 README 和对应交付报告为准。
 
 V2.4 当前主机没有 `vcan0`，也没有 `candump`/`cansend`，因此 vcan 测试被测试框架明确标记为跳过。纯解析、接收器替身、超时/停止协作和不存在接口初始化失败可以在不依赖 CAN 硬件时验证；这些结果不能替代真实 socket、物理总线或目标板验证。
 
@@ -17,7 +17,7 @@ arm-none-linux-gnueabihf-g++
 aarch64-linux-gnu-g++
 ```
 
-因此尚未完成 ARM 交叉编译、目标链接、板端部署或实机运行验证。ThreadSanitizer 在当前 WSL2 环境会因 `unexpected memory mapping` 失败，也不能作为已通过项目记录。
+也没有检测到 Yocto SDK 环境、ARM sysroot、`qemu-arm` 或 `qemu-system-arm`。因此尚未完成 ARM 交叉编译、目标链接、QEMU 执行、板端部署或实机运行验证。ThreadSanitizer 在当前 WSL2 环境会因 `unexpected memory mapping` 失败，也不能作为已通过项目记录。
 
 ## 移植前必须确定的目标输入
 
@@ -59,26 +59,26 @@ i.MX6ULL 通常是 32 位 ARMv7-A/Cortex-A7 平台，但最终 ABI、编译选�
 
 ```text
 cmake/toolchains/imx6ull-linux-example.cmake
+cmake/toolchains/imx6ull-linux-gnu.cmake
+scripts/build-imx6ull.sh
+scripts/check-arm-elf.sh
 ```
 
-该文件不会猜测工具链前缀、ABI 或 sysroot。缺少输入时会主动终止配置。
+正式入口 `imx6ull-linux-gnu.cmake` 要求外部提供 C/C++ 编译器和 sysroot，验证编译器 target 以 `arm` 开头，并把库、头文件和 package 查找限制在 sysroot。它不会猜测 hard-float、libc、FPU 或发行版。`imx6ull-linux-example.cmake` 保留为早期最小模板。
 
-示例命令中的路径必须替换为 BSP 的真实路径：
+路径必须替换为 BSP 或 SDK 的真实值：
 
 ```bash
-cmake -S . -B build-arm -G Ninja \
-  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/imx6ull-linux-example.cmake \
-  -DIMX6ULL_CXX_COMPILER=/opt/vendor-sdk/bin/<target>-g++ \
-  -DIMX6ULL_SYSROOT=/opt/vendor-sdk/sysroots/<target> \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX=/usr \
-  -DBUILD_TESTING=OFF
-
-cmake --build build-arm --verbose
-DESTDIR="$PWD/stage-arm" cmake --install build-arm
+./scripts/build-imx6ull.sh \
+  --build-type Release \
+  --cc /opt/vendor-sdk/bin/<target>-gcc \
+  --cxx /opt/vendor-sdk/bin/<target>-g++ \
+  --sysroot /opt/vendor-sdk/sysroots/<target>
 ```
 
-只有当编译器、链接器和 sysroot 全部匹配目标系统，且生成文件经 `file`/`readelf` 确认为目标 ARM ELF 后，才能记录为交叉编译成功。
+脚本生成 `build_imx6ull_release/` 和 `install_imx6ull_release/`，并自动检查 ELF32/ARM、动态加载器及全部 `DT_NEEDED` sysroot 依赖。Yocto SDK、直接 CMake 命令和 ABI 核对步骤见 [IMX6ULL_CROSS_COMPILE.md](IMX6ULL_CROSS_COMPILE.md)。
+
+只有当编译器、链接器和 sysroot 全部匹配目标系统，且自动检查真实通过后，才能记录为交叉编译成功。当前环境只能验证脚本错误路径，不能记录 ARM 构建通过。
 
 不要用主机 `strip` 处理目标文件；如需裁剪符号，应使用工具链配套的 target `strip`，并保留一份带调试信息的构建产物。
 
@@ -93,6 +93,7 @@ DESTDIR="$PWD/stage-arm" cmake --install build-arm
 /etc/imx6ull-car-terminal/socketcan-synthetic-example.conf
 /usr/lib/systemd/system/imx6ull-car-terminal.service # 仅 systemd 系统
 /usr/share/doc/imx6ull-car-terminal/README.md
+/usr/share/doc/imx6ull-car-terminal/IMX6ULL_CROSS_COMPILE.md
 /usr/share/doc/imx6ull-car-terminal/IMX6ULL_PORTING_GUIDE.md
 /usr/share/doc/imx6ull-car-terminal/SOCKETCAN_VIRTUAL_PLAN.md
 /var/log/imx6ull-car-terminal/car_terminal.log       # 首次运行创建

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(IMX6ULL_CarTerminal VERSION 2.6.0 LANGUAGES CXX)
+project(IMX6ULL_CarTerminal VERSION 2.7.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -138,6 +138,7 @@ install(PROGRAMS
 install(FILES
     README.md
     docs/IMX6ULL_PORTING_GUIDE.md
+    docs/IMX6ULL_CROSS_COMPILE.md
     docs/SYSTEMD_DEPLOYMENT.md
     docs/SOCKETCAN_VIRTUAL_PLAN.md
     DESTINATION "${CAR_TERMINAL_INSTALL_DOC_DIR}"
@@ -193,6 +194,19 @@ if(BUILD_TESTING)
                 "${CMAKE_CURRENT_BINARY_DIR}/generated/imx6ull-car-terminal.service"
     )
     set_tests_properties(car_terminal_systemd_unit PROPERTIES TIMEOUT 30)
+
+    add_test(
+        NAME car_terminal_cross_build_scripts
+        COMMAND "${BASH_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cross_build_scripts.sh"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-imx6ull.sh"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-arm-elf.sh"
+                "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchains/imx6ull-linux-gnu.cmake"
+                "$<TARGET_FILE:car_terminal>"
+    )
+    set_tests_properties(car_terminal_cross_build_scripts PROPERTIES
+        TIMEOUT 30
+    )
 
     add_executable(socketcan_test_sender tests/socketcan_test_sender.cpp)
     enable_strict_warnings(socketcan_test_sender)

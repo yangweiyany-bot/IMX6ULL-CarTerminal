@@ -2,6 +2,7 @@
 build/
 build*/
 cmake-build-*/
+install_imx6ull*/
 /car_terminal
 *.o
 *.a
