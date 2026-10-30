@@ -156,6 +156,26 @@ void runSocketCanTests(test_support::TestSuite& suite) {
                      "receiver should observe stop immediately");
     });
 
+    suite.run("SocketCAN timeout retries observe a later stop request", [] {
+        FakeCanReceiver receiver({
+            {CanReceiveStatus::Timeout, {}},
+            {CanReceiveStatus::Timeout, {}},
+            {CanReceiveStatus::Timeout, {}},
+        });
+        CanVehicleDataParser parser(mappings());
+        SocketCanDataSource source(receiver, parser,
+                                   std::chrono::milliseconds(10),
+                                   [&receiver] {
+                                       return receiver.calls() >= 3;
+                                   });
+        requireThrows<AcquisitionStopped>(
+            [&] { static_cast<void>(source.nextSample()); },
+            "acquisition stopped");
+        requireEqual(receiver.calls(), std::size_t{3},
+                     "timeout loop should re-check the stop callback before "
+                     "waiting again");
+    });
+
     suite.run("consumer failure cancels SocketCAN acquisition", [] {
         CancellationAwareReceiver receiver;
         CanVehicleDataParser parser(mappings());
@@ -163,7 +183,7 @@ void runSocketCanTests(test_support::TestSuite& suite) {
                                    std::chrono::milliseconds(10),
                                    [] { return false; });
         MonitoringService service(
-            2, std::chrono::milliseconds(0), 1,
+            RunMode::Continuous, 0, std::chrono::milliseconds(1), 1,
             [&source] { return source.nextSample(); },
             [&receiver](const VehicleData&) {
                 const auto deadline = std::chrono::steady_clock::now() +

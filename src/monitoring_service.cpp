@@ -20,17 +20,35 @@ MonitoringService::MonitoringService(
     AcquireFunction acquire,
     ProcessFunction process,
     CancelFunction cancelAcquisition)
-    : sampleCount_(sampleCount),
+    : MonitoringService(RunMode::Finite, sampleCount, samplingInterval,
+                        queueCapacity, std::move(acquire), std::move(process),
+                        std::move(cancelAcquisition)) {}
+
+MonitoringService::MonitoringService(
+    RunMode runMode,
+    std::size_t sampleCount,
+    std::chrono::milliseconds samplingInterval,
+    std::size_t queueCapacity,
+    AcquireFunction acquire,
+    ProcessFunction process,
+    CancelFunction cancelAcquisition)
+    : runMode_(runMode),
+      sampleCount_(sampleCount),
       samplingInterval_(samplingInterval),
       queueCapacity_(queueCapacity),
       acquire_(std::move(acquire)),
       process_(std::move(process)),
       cancelAcquisition_(std::move(cancelAcquisition)) {
-    if (sampleCount_ == 0) {
+    if (runMode_ == RunMode::Finite && sampleCount_ == 0) {
         throw std::invalid_argument("Monitoring sample count must be positive");
     }
     if (samplingInterval_.count() < 0) {
         throw std::invalid_argument("Sampling interval must not be negative");
+    }
+    if (runMode_ == RunMode::Continuous &&
+        samplingInterval_.count() == 0) {
+        throw std::invalid_argument(
+            "Continuous monitoring interval must be positive");
     }
     if (queueCapacity_ == 0) {
         throw std::invalid_argument("Monitoring queue capacity must be positive");
@@ -80,19 +98,27 @@ void MonitoringService::run(StopFunction externalStopRequested) {
 
     const auto producer = [&] {
         try {
-            for (std::size_t index = 0; index < sampleCount_; ++index) {
+            std::size_t samplesProduced = 0;
+            const auto hasMoreSamples = [&] {
+                return runMode_ == RunMode::Continuous ||
+                       samplesProduced < sampleCount_;
+            };
+            while (hasMoreSamples()) {
                 if (shouldStop()) {
                     break;
                 }
                 if (!queue.push(acquire_())) {
                     break;
                 }
+                if (runMode_ == RunMode::Finite) {
+                    ++samplesProduced;
+                }
                 // A stop request that arrives during acquisition must not
                 // discard the sample that has already been acquired.
                 if (shouldStop()) {
                     break;
                 }
-                if (index + 1 < sampleCount_) {
+                if (hasMoreSamples()) {
                     std::unique_lock<std::mutex> lock(intervalMutex);
                     const auto deadline =
                         std::chrono::steady_clock::now() + samplingInterval_;

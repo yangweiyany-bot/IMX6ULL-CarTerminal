@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(IMX6ULL_CarTerminal VERSION 2.4.0 LANGUAGES CXX)
+project(IMX6ULL_CarTerminal VERSION 2.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -91,7 +91,9 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/generated/default.conf"
     DESTINATION "${CAR_TERMINAL_INSTALL_CONFIG_DIR}"
     COMPONENT Runtime
 )
-install(FILES config/socketcan-synthetic-example.conf
+install(FILES
+    config/continuous-simulator-example.conf
+    config/socketcan-synthetic-example.conf
     DESTINATION "${CAR_TERMINAL_INSTALL_CONFIG_DIR}"
     COMPONENT Runtime
 )

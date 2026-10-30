@@ -281,6 +281,7 @@ AppConfig loadConfig(const std::filesystem::path& configPath) {
         "low_voltage_threshold_v",
         "high_temperature_threshold_c",
         "overspeed_threshold_kmh",
+        "run_mode",
         "sample_count",
         "sampling_interval_ms",
         "queue_capacity",
@@ -344,6 +345,16 @@ AppConfig loadConfig(const std::filesystem::path& configPath) {
     config.thresholds.overspeedKmh = parseDouble(
         "overspeed_threshold_kmh",
         requireValue(values, "overspeed_threshold_kmh"));
+    const auto runMode = values.find("run_mode");
+    const std::string runModeValue =
+        runMode == values.end() ? "finite" : runMode->second;
+    if (runModeValue == "finite") {
+        config.runMode = RunMode::Finite;
+    } else if (runModeValue == "continuous") {
+        config.runMode = RunMode::Continuous;
+    } else {
+        throw ConfigError("run_mode must be either finite or continuous");
+    }
     config.sampleCount =
         parseSize("sample_count", requireValue(values, "sample_count"));
     const auto interval = parseSize(

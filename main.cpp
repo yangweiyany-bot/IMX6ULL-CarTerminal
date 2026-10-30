@@ -36,6 +36,11 @@ int runApplication(const std::filesystem::path& configPath,
         car_terminal::MonitoringService::AcquireFunction acquire;
         car_terminal::MonitoringService::CancelFunction cancelAcquisition;
         std::string sourceDescription;
+        const std::string runModeDescription =
+            config.runMode == car_terminal::RunMode::Finite
+                ? "finite (" + std::to_string(config.sampleCount) +
+                      " samples)"
+                : "continuous (until SIGINT/SIGTERM)";
 
         if (config.dataSource == car_terminal::DataSourceKind::Simulator) {
             acquire = [&simulator] { return simulator.nextSample(); };
@@ -66,6 +71,7 @@ int runApplication(const std::filesystem::path& configPath,
         std::cout << "===== Smart Car Terminal V"
                   << car_terminal::applicationVersion() << " =====\n";
         std::cout << "Data source: " << sourceDescription << '\n';
+        std::cout << "Run mode: " << runModeDescription << '\n';
         if (config.dataSource == car_terminal::DataSourceKind::Simulator) {
             std::cout << "Simulation only: generated samples are not real "
                          "vehicle data.\n";
@@ -77,10 +83,11 @@ int runApplication(const std::filesystem::path& configPath,
                      "vehicle diagnostic standards.\n";
         std::cout << "Configuration: " << configPath << "\n\n";
         logger.log(car_terminal::LogLevel::Info,
-                   "Monitoring started using " + sourceDescription + " with " +
-                       std::to_string(config.sampleCount) + " samples");
+                   "Monitoring started using " + sourceDescription + " in " +
+                       runModeDescription + " mode");
 
         car_terminal::MonitoringService monitoring(
+            config.runMode,
             config.sampleCount,
             config.samplingInterval,
             config.queueCapacity,

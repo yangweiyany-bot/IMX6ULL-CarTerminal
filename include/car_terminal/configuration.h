@@ -1,6 +1,7 @@
 #pragma once
 
 #include "car_terminal/can_types.h"
+#include "car_terminal/run_mode.h"
 
 #include <chrono>
 #include <cstddef>
@@ -32,6 +33,7 @@ struct SocketCanConfig {
 
 struct AppConfig {
     AlarmThresholds thresholds;
+    RunMode runMode{RunMode::Finite};
     std::size_t sampleCount{};
     std::chrono::milliseconds samplingInterval{0};
     std::size_t queueCapacity{};

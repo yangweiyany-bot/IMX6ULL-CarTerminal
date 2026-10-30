@@ -25,7 +25,8 @@ void runSignalTests(test_support::TestSuite& suite) {
         std::vector<std::size_t> processed;
 
         car_terminal::MonitoringService service(
-            100,
+            car_terminal::RunMode::Continuous,
+            0,
             std::chrono::milliseconds(1),
             1,
             [&] {

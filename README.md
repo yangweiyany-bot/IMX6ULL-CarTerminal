@@ -1,6 +1,6 @@
-# IMX6ULL Smart Car Terminal V2.4
+# IMX6ULL Smart Car Terminal V2.5
 
-这是一个面向嵌入式 Linux 学习与实习作品展示的 C++17 智能车载终端项目。默认模式使用确定性模拟数据；可选 SocketCAN 模式通过 Linux 原生经典 CAN socket 接收原始帧，经显式配置的映射转换为车辆数据。采集与处理仍使用两个线程，检测车速、温度与电压状态，并把日志及采样数据写入文件。
+这是一个面向嵌入式 Linux 学习与实习作品展示的 C++17 智能车载终端项目。默认使用兼容旧版本的有限次数模拟监控；也可选择连续模式，持续运行到收到 SIGINT/SIGTERM。可选 SocketCAN 模式通过 Linux 原生经典 CAN socket 接收原始帧，经显式配置的映射转换为车辆数据。采集与处理使用两个线程，检测车速、温度与电压状态，并把日志及采样数据写入文件。
 
 > 当前版本只在 Ubuntu 24.04 / WSL2 的 x86-64 Linux 用户空间中完成适用范围内的本地构建和测试。当前环境没有 `vcan0`，因此真实 SocketCAN 收发集成测试未执行；解析测试使用明确标注的合成字节。项目没有真实车辆协议、DBC 或 i.MX6ULL 实机验证。报警阈值仅为演示参数，不是车辆诊断或安全标准。GitHub Actions 尚未实际运行。
 
@@ -11,6 +11,7 @@
 - 线程安全的 INFO、WARNING、ERROR 日志模块，同时输出到控制台和文件。
 - CSV 数据记录，包含样本编号、UTC 时间戳、三项数值和状态。
 - 有界生产者—消费者队列：采集线程产生样本，处理线程判断状态并写入日志/CSV。
+- `finite` 与 `continuous` 两种明确运行模式；连续模式由信号安全停止并排空队列。
 - CMake + Ninja 构建，启用 C++17 和 `-Wall -Wextra -Wpedantic`。
 - 不依赖测试框架的命令行自动化测试，通过 CTest 执行。
 - 提供 `--help`、`--version` 和 `--config <path>` 命令行接口。
@@ -32,6 +33,7 @@
 ├── cmake/toolchains/
 │   └── imx6ull-linux-example.cmake
 ├── config/
+│   ├── continuous-simulator-example.conf
 │   ├── default.conf
 │   ├── default-install.conf.in
 │   └── socketcan-synthetic-example.conf
@@ -47,6 +49,7 @@
 │   ├── csv_recorder.h
 │   ├── logger.h
 │   ├── monitoring_service.h
+│   ├── run_mode.h
 │   ├── sample_processor.h
 │   ├── simulator.h
 │   ├── signal_handler.h
@@ -120,7 +123,7 @@ Linux PF_CAN socket
 CanVehicleDataParser ──► VehicleData ──► 原有 BlockingQueue/处理链
 ```
 
-队列容量可配置。队列满时生产者阻塞，不忙等待；队列空时消费者阻塞。任何线程发生异常都会关闭队列、通知所有等待者，两个线程完成 `join` 后异常才传播到主线程，因此不会遗留可连接线程。`AcquireFunction` 签名保持不变；SocketCAN 另外注册一个只置原子标志的取消回调，使消费者 I/O 失败时也能终止正在进行的“超时—重试”采集循环。
+队列容量可配置。队列满时生产者阻塞，不忙等待；队列空时消费者阻塞。`finite` 模式在处理配置的样本数后结束；`continuous` 模式不设内部样本上限，每次采集后使用可中断的条件变量定时等待。任何线程发生异常都会关闭队列、通知所有等待者，两个线程完成 `join` 后异常才传播到主线程，因此不会遗留可连接线程。`AcquireFunction` 签名保持不变；SocketCAN 另外注册一个只置原子标志的取消回调，使消费者 I/O 失败时也能终止正在进行的“超时—重试”采集循环。
 
 收到 SIGINT 或 SIGTERM 后，异步信号处理函数只写入 `volatile sig_atomic_t`。采集线程在开始下一次采集前观察该标志；若信号在一次采集中到达，该样本仍会入队。随后生产者关闭队列，消费者排空已入队样本并退出，两个线程均由主线程 `join`。采集回调本身仍必须具有有界超时，否则任何同步关闭方案都无法中断永久阻塞的硬件读取。
 
@@ -142,35 +145,42 @@ CanVehicleDataParser ──► VehicleData ──► 原有 BlockingQueue/处理
 在项目根目录执行：
 
 ```bash
-cmake -S . -B build_v24 -G Ninja \
+cmake -S . -B build_v25 -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
-cmake --build build_v24 --verbose
-ctest --test-dir build_v24 --output-on-failure
+cmake --build build_v25 --verbose
+ctest --test-dir build_v25 --output-on-failure
 ```
 
 运行：
 
 ```bash
-./build_v24/car_terminal --config config/default.conf
+./build_v25/car_terminal --config config/default.conf
 ```
 
 不传参数时默认读取当前工作目录下的 `config/default.conf`：
 
 ```bash
-./build_v24/car_terminal
+./build_v25/car_terminal
 ```
 
 也保留单个位置参数形式以兼容 V2.0：
 
 ```bash
-./build_v24/car_terminal config/default.conf
+./build_v25/car_terminal config/default.conf
 ```
 
 命令行帮助和版本：
 
 ```bash
-./build_v24/car_terminal --help
-./build_v24/car_terminal --version
+./build_v25/car_terminal --help
+./build_v25/car_terminal --version
+```
+
+连续模拟监控会一直运行到收到 Ctrl+C（SIGINT）或 SIGTERM：
+
+```bash
+./build_v25/car_terminal \
+  --config config/continuous-simulator-example.conf
 ```
 
 未知选项、缺少 `--config` 路径或多余参数会显示用法并以状态码 2 退出。配置错误同样以状态码 2 退出；运行期文件或处理错误以状态码 1 退出。`log_file` 和 `csv_file` 不允许指向同一文件，也不允许覆盖当前配置文件，以避免日志追加与 CSV 截断破坏配置或彼此数据。
@@ -194,6 +204,7 @@ cmake --install build_install
 
 ```text
 install-root/bin/car_terminal
+install-root/etc/imx6ull-car-terminal/continuous-simulator-example.conf
 install-root/etc/imx6ull-car-terminal/default.conf
 install-root/etc/imx6ull-car-terminal/socketcan-synthetic-example.conf
 install-root/share/doc/imx6ull-car-terminal/README.md
@@ -219,14 +230,15 @@ install-root/share/doc/imx6ull-car-terminal/SOCKETCAN_VIRTUAL_PLAN.md
 | `low_voltage_threshold_v` | 低电压演示阈值 | 12.55 |
 | `high_temperature_threshold_c` | 高温演示阈值 | 40.0 |
 | `overspeed_threshold_kmh` | 超速演示阈值 | 120.0 |
-| `sample_count` | 总采样次数 | 10 |
+| `run_mode` | `finite` 或 `continuous`；省略时兼容为 `finite` | `finite` |
+| `sample_count` | `finite` 的总采样次数；连续模式仍解析但不作为停止条件 | 10 |
 | `sampling_interval_ms` | 采样间隔（毫秒） | 100 |
 | `queue_capacity` | 生产者—消费者队列容量 | 4 |
 | `log_file` | 日志路径 | `../runtime/car_terminal.log` |
 | `csv_file` | CSV 路径 | `../runtime/vehicle_data.csv` |
 | `data_source` | `simulator` 或 `socketcan` | `simulator` |
 
-相对输出路径相对于配置文件所在目录解析，而不是相对于可执行文件。配置解析器会拒绝未知键、重复键、缺失键、非数字值和不合理范围。
+相对输出路径相对于配置文件所在目录解析，而不是相对于可执行文件。配置解析器会拒绝未知键、重复键、缺失键、非数字值和不合理范围。旧配置没有 `run_mode` 时保持有限次数运行，不会意外变为常驻进程。
 
 ## SocketCAN 配置与运行
 
@@ -294,10 +306,11 @@ ctest --test-dir build_v24 -R vcan --output-on-failure -V
 - INFO/WARNING/ERROR 日志内容与 CSV 表头、数据、组合状态。
 - 日志/CSV 文件打开失败，以及对象析构后文件可再次使用。
 - 有界队列的顺序、全部样本处理、消费者异常后的停止、异常传播和线程连接。
+- finite 次数兼容、continuous 持续采样、信号停止和连续模式异常退出。
 - 满队列生产者和空队列消费者在关闭时被唤醒，以及关闭后队列数据的排空。
 - 并发日志/CSV 完整性、真实写失败、生产者异常和命令行解析。
 - 正常监测完成、SIGINT/SIGTERM 标志记录、信号停止后的已采集样本排空。
-- 进程级 SIGTERM 测试：退出码、停止日志和 CSV 完整性。
+- 进程级 SIGINT/SIGTERM 测试：连续模式越过有限样本数、退出码、队列排空、停止日志及 CSV/日志样本数一致性。
 - 标准/扩展 CAN ID、过滤器、DLC、大小端、有符号转换、缩放/偏移、溢出和多帧完整性。
 - SocketCAN 超时重试、停止协作、接收错误传播和不存在接口的初始化错误。
 - 可选 vcan 集成测试；只有环境中已有 `vcan0` 时才实际发送帧。
@@ -320,6 +333,7 @@ TSan 和 vcan 作业都没有设置 `continue-on-error`，检测或环境准备�
 - 没有在 ARM 或 i.MX6ULL 开发板上交叉编译、部署或实机验证。
 - `std::thread` 调度不是硬实时，采样间隔不能作为实时保证。
 - CSV 每次运行覆盖，日志则追加；生产系统通常还需要轮转、存储上限和掉电保护。
+- 连续模式本身不限制日志和 CSV 大小；长期部署必须配置容量监控、轮转或保留策略。
 - CSV 使用系统墙钟记录 UTC 时间；系统校时可能让相邻时间戳不单调，样本顺序应以 `sample` 字段为准。
 - 模拟器数值固定递增/递减，不代表任何真实车辆模型。
 - 信号停止无法抢占永久阻塞的采集回调；未来硬件数据源必须提供读取超时。
@@ -336,6 +350,14 @@ TSan 和 vcan 作业都没有设置 `continue-on-error`，检测或环境准备�
 5. 根据部署需求增加 systemd 服务、日志轮转、只读根文件系统适配和交叉平台 CI。
 
 SocketCAN 使用方法、合成帧格式、vcan 前置条件和验收边界见 [docs/SOCKETCAN_VIRTUAL_PLAN.md](docs/SOCKETCAN_VIRTUAL_PLAN.md)。当前环境没有 `vcan0`，所以只完成了构建、纯解析/替身单元测试和不存在接口错误路径验证，未完成真实 socket 收发集成验证。
+
+## V2.5 相对于 V2.4
+
+- 新增显式 `finite`/`continuous` 运行模式，旧配置默认保持 finite。
+- 连续模式复用有界阻塞队列、采样间隔等待、异常传播和线程连接机制。
+- SIGINT/SIGTERM 后停止生产、排空队列、刷新日志与 CSV，并分别返回 130/143。
+- 新增连续模拟配置、配置校验、线程异常、SocketCAN 超时停止及双信号进程级测试。
+- 版本号更新为 2.5.0；没有声称完成真实 CAN 或 i.MX6ULL 实机验证。
 
 ## V2.4 相对于 V2.3
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "car_terminal/run_mode.h"
 #include "car_terminal/vehicle_data.h"
 
 #include <chrono>
@@ -30,9 +31,18 @@ public:
                       ProcessFunction process,
                       CancelFunction cancelAcquisition = {});
 
+    MonitoringService(RunMode runMode,
+                      std::size_t sampleCount,
+                      std::chrono::milliseconds samplingInterval,
+                      std::size_t queueCapacity,
+                      AcquireFunction acquire,
+                      ProcessFunction process,
+                      CancelFunction cancelAcquisition = {});
+
     void run(StopFunction externalStopRequested = {});
 
 private:
+    RunMode runMode_;
     std::size_t sampleCount_;
     std::chrono::milliseconds samplingInterval_;
     std::size_t queueCapacity_;

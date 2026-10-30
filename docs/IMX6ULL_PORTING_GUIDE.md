@@ -4,11 +4,11 @@
 
 ## 当前验证边界
 
-V2.2 已在 Ubuntu 24.04 / WSL2 的 x86-64 Linux 用户空间完成主机端验证。V2.3 增加安全信号退出与 CI 配置；V2.4 增加 Linux SocketCAN 经典 CAN 接收、显式信号映射和可选 vcan 集成测试。本地验证结果以 README 和对应交付报告为准，GitHub Actions 在实际运行前不能标记为通过。
+V2.2 已在 Ubuntu 24.04 / WSL2 的 x86-64 Linux 用户空间完成主机端验证。V2.3 增加安全信号退出与 CI 配置；V2.4 增加 Linux SocketCAN 经典 CAN 接收、显式信号映射和可选 vcan 集成测试；V2.5 增加有限次数与连续监控两种运行模式。本地验证结果以 README 和对应交付报告为准，GitHub Actions 在实际运行前不能标记为通过。
 
 V2.4 当前主机没有 `vcan0`，也没有 `candump`/`cansend`，因此 vcan 测试被测试框架明确标记为跳过。纯解析、接收器替身、超时/停止协作和不存在接口初始化失败可以在不依赖 CAN 硬件时验证；这些结果不能替代真实 socket、物理总线或目标板验证。
 
-截至 2026-10-29，当前主机没有检测到以下常见命令：
+截至 2026-10-30，当前主机没有检测到以下常见命令：
 
 ```text
 arm-linux-gnueabihf-g++
@@ -48,9 +48,9 @@ i.MX6ULL 通常是 32 位 ARMv7-A/Cortex-A7 平台，但最终 ABI、编译选�
 - 可写的日志和 CSV 目录；
 - `localtime_r`、`gmtime_r` 和正常工作的系统墙钟。
 
-模拟采集和 V2.4 的 `SocketCanDataSource` 都通过 `MonitoringService::AcquireFunction` 注入，无需修改状态判断、日志、CSV 或线程调度。未来其他硬件适配器也应保持这条边界；除非实际出现多个复杂数据源和生命周期需求，否则无需先引入虚基类层次。
+模拟采集和 `SocketCanDataSource` 都通过 `MonitoringService::AcquireFunction` 注入，无需修改状态判断、日志、CSV 或线程调度。V2.5 的连续模式只改变监控循环边界，不改变采集接口。未来其他硬件适配器也应保持这条边界；除非实际出现多个复杂数据源和生命周期需求，否则无需先引入虚基类层次。
 
-停止谓词同样通过回调注入。V2.4 SocketCAN 接收器使用有限 `poll` 超时并在每次等待后检查停止请求；其他真实 `readSample()` 也必须使用超时或可取消 I/O，避免永久阻塞导致进程无法及时响应 SIGINT/SIGTERM。
+停止谓词同样通过回调注入。SocketCAN 接收器使用有限 `poll` 超时并在每次等待后检查停止请求；其他真实 `readSample()` 也必须使用超时或可取消 I/O，避免永久阻塞导致连续模式无法及时响应 SIGINT/SIGTERM。
 
 ## 工具链模板
 
@@ -122,9 +122,11 @@ DESTDIR="$PWD/stage-arm" cmake --install build-arm
 - `ldd` 或等效检查没有缺失的 libstdc++、libgcc、libc 或 pthread 依赖。
 - `--help`、`--version` 和配置错误退出码正确。
 - 10 次模拟采样完整，生产者和消费者能正常退出。
+- 连续模拟模式能越过 `sample_count` 持续运行，并分别由 SIGINT/SIGTERM 安全停止。
+- 信号停止后 CSV 行数、处理日志数量和最后样本号一致，两个线程均已连接。
 - 日志和 CSV 目录权限正确，重启后行为符合预期。
 - 系统时间未同步时的时间戳行为被接受或有明确处理策略。
-- 连续运行和磁盘空间不足时不会造成失控增长或死循环。
+- 评估连续运行的日志/CSV 增长、磁盘空间不足、轮转、掉电恢复和最长预期运行时间。
 - SIGINT/SIGTERM 停止会排空已入队数据、刷新文件并以约定状态码退出。
 - 真正的数据源适配器有超时、错误传播、断线重试和输入范围校验。
 - SocketCAN 接口名称、标准/扩展帧过滤、接收超时、错误帧/RTR/短帧处理均在目标内核上重新验证。

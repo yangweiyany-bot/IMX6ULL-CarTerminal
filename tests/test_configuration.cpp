@@ -66,8 +66,22 @@ void runConfigurationTests(test_support::TestSuite& suite) {
                 "relative CSV path should resolve from config directory");
         require(config.dataSource == car_terminal::DataSourceKind::Simulator,
                 "omitted data source should preserve simulator compatibility");
+        require(config.runMode == car_terminal::RunMode::Finite,
+                "omitted run mode should preserve finite compatibility");
         require(!config.socketCan.has_value(),
                 "simulator configuration should not create CAN settings");
+    });
+
+    suite.run("continuous run mode configuration", [] {
+        TempDirectory temp;
+        const auto path = temp.path() / "continuous.conf";
+        writeText(path, std::string(kValidConfig) +
+                            "run_mode=continuous\n");
+        const auto config = car_terminal::loadConfig(path);
+        require(config.runMode == car_terminal::RunMode::Continuous,
+                "continuous run mode should be selected");
+        requireEqual(config.sampleCount, std::size_t{10},
+                     "sample count remains parsed for compatibility");
     });
 
     suite.run("valid SocketCAN configuration", [] {
@@ -181,6 +195,12 @@ void runConfigurationTests(test_support::TestSuite& suite) {
         expectConfigError(std::string(kValidConfig) +
                               "data_source=automatic\n",
                           "data_source must be");
+    });
+
+    suite.run("invalid run mode is rejected", [] {
+        expectConfigError(std::string(kValidConfig) +
+                              "run_mode=forever\n",
+                          "run_mode must be either finite or continuous");
     });
 
     suite.run("simulator rejects stray CAN configuration", [] {
