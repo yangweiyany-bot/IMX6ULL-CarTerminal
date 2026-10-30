@@ -1,11 +1,21 @@
 #include "car_terminal/configuration.h"
 
+#include "car_terminal/can_parser.h"
+
+#include <algorithm>
+#include <array>
+#include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <fstream>
 #include <limits>
+#include <set>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace car_terminal {
 namespace {
@@ -55,6 +65,158 @@ std::size_t parseSize(const std::string& key, const std::string& value) {
                           "': " + value);
     }
     return static_cast<std::size_t>(result);
+}
+
+std::uint32_t parseCanUnsigned(const std::string& key,
+                               const std::string& value) {
+    if (value.empty() || value.front() == '-') {
+        throw ConfigError("Invalid CAN integer for '" + key + "': " +
+                          value);
+    }
+    std::size_t parsed = 0;
+    unsigned long long result = 0;
+    try {
+        result = std::stoull(value, &parsed, 0);
+    } catch (const std::exception&) {
+        throw ConfigError("Invalid CAN integer for '" + key + "': " +
+                          value);
+    }
+    if (parsed != value.size() ||
+        result > std::numeric_limits<std::uint32_t>::max()) {
+        throw ConfigError("Invalid CAN integer for '" + key + "': " +
+                          value);
+    }
+    return static_cast<std::uint32_t>(result);
+}
+
+std::vector<std::string> split(const std::string& value, char delimiter) {
+    std::vector<std::string> parts;
+    std::size_t begin = 0;
+    while (true) {
+        const std::size_t end = value.find(delimiter, begin);
+        parts.push_back(trim(value.substr(begin, end - begin)));
+        if (end == std::string::npos) {
+            break;
+        }
+        begin = end + 1;
+    }
+    return parts;
+}
+
+CanFrameFormat parseCanFormat(const std::string& key,
+                              const std::string& value) {
+    if (value == "standard") {
+        return CanFrameFormat::Standard;
+    }
+    if (value == "extended") {
+        return CanFrameFormat::Extended;
+    }
+    throw ConfigError("Invalid CAN frame format for '" + key +
+                      "': expected standard or extended");
+}
+
+CanByteOrder parseCanByteOrder(const std::string& key,
+                               const std::string& value) {
+    if (value == "little") {
+        return CanByteOrder::LittleEndian;
+    }
+    if (value == "big") {
+        return CanByteOrder::BigEndian;
+    }
+    throw ConfigError("Invalid CAN byte order for '" + key +
+                      "': expected little or big");
+}
+
+CanValueType parseCanValueType(const std::string& key,
+                               const std::string& value) {
+    if (value == "unsigned") {
+        return CanValueType::Unsigned;
+    }
+    if (value == "signed") {
+        return CanValueType::Signed;
+    }
+    throw ConfigError("Invalid CAN value type for '" + key +
+                      "': expected unsigned or signed");
+}
+
+std::vector<CanFilterRule> parseCanFilters(const std::string& value) {
+    if (value.empty()) {
+        throw ConfigError("can_filters must not be empty");
+    }
+
+    std::vector<CanFilterRule> filters;
+    std::set<std::tuple<int, std::uint32_t, std::uint32_t>> unique;
+    for (const auto& specification : split(value, ',')) {
+        const auto fields = split(specification, ':');
+        if (fields.size() != 3) {
+            throw ConfigError(
+                "Each can_filters entry must be format:id:mask");
+        }
+        CanFilterRule filter;
+        filter.format = parseCanFormat("can_filters", fields[0]);
+        filter.identifier = parseCanUnsigned("can_filters", fields[1]);
+        filter.mask = parseCanUnsigned("can_filters", fields[2]);
+        try {
+            validateCanFilter(filter);
+        } catch (const CanParseError& error) {
+            throw ConfigError(std::string("Invalid can_filters entry: ") +
+                              error.what());
+        }
+        const auto identity = std::make_tuple(
+            filter.format == CanFrameFormat::Standard ? 0 : 1,
+            filter.identifier, filter.mask);
+        if (!unique.insert(identity).second) {
+            throw ConfigError("Duplicate can_filters entry: " +
+                              specification);
+        }
+        filters.push_back(filter);
+    }
+    return filters;
+}
+
+CanSignalMapping parseCanMapping(const std::string& key,
+                                 const std::string& value,
+                                 VehicleSignal signal) {
+    const auto fields = split(value, ':');
+    if (fields.size() != 8) {
+        throw ConfigError(
+            key + " must be format:id:byte_offset:byte_length:" +
+                  "byte_order:value_type:scale:value_offset");
+    }
+
+    CanSignalMapping mapping;
+    mapping.signal = signal;
+    mapping.format = parseCanFormat(key, fields[0]);
+    mapping.identifier = parseCanUnsigned(key, fields[1]);
+    mapping.byteOffset = parseSize(key, fields[2]);
+    mapping.byteLength = parseSize(key, fields[3]);
+    mapping.byteOrder = parseCanByteOrder(key, fields[4]);
+    mapping.valueType = parseCanValueType(key, fields[5]);
+    mapping.scale = parseDouble(key, fields[6]);
+    mapping.valueOffset = parseDouble(key, fields[7]);
+    try {
+        validateCanSignalMapping(mapping);
+    } catch (const CanParseError& error) {
+        throw ConfigError("Invalid " + key + ": " + error.what());
+    }
+    return mapping;
+}
+
+void validateCanInterfaceName(const std::string& interfaceName) {
+    if (interfaceName.empty()) {
+        throw ConfigError("can_interface must not be empty");
+    }
+    if (interfaceName.size() >= 16) {
+        throw ConfigError("can_interface must be shorter than 16 characters");
+    }
+    const bool valid = std::all_of(
+        interfaceName.begin(), interfaceName.end(), [](unsigned char value) {
+            return std::isalnum(value) != 0 || value == '_' || value == '-' ||
+                   value == '.';
+        });
+    if (!valid) {
+        throw ConfigError("can_interface contains unsupported characters");
+    }
 }
 
 std::string requireValue(
@@ -124,6 +286,13 @@ AppConfig loadConfig(const std::filesystem::path& configPath) {
         "queue_capacity",
         "log_file",
         "csv_file",
+        "data_source",
+        "can_interface",
+        "can_receive_timeout_ms",
+        "can_filters",
+        "can_speed_mapping",
+        "can_temperature_mapping",
+        "can_voltage_mapping",
     };
     std::unordered_map<std::string, std::string> values;
 
@@ -188,6 +357,77 @@ AppConfig loadConfig(const std::filesystem::path& configPath) {
         std::chrono::milliseconds(static_cast<long long>(interval));
     config.queueCapacity = parseSize(
         "queue_capacity", requireValue(values, "queue_capacity"));
+
+    const auto dataSource = values.find("data_source");
+    const std::string dataSourceValue =
+        dataSource == values.end() ? "simulator" : dataSource->second;
+    if (dataSourceValue == "simulator") {
+        config.dataSource = DataSourceKind::Simulator;
+    } else if (dataSourceValue == "socketcan") {
+        config.dataSource = DataSourceKind::SocketCan;
+    } else {
+        throw ConfigError(
+            "data_source must be either simulator or socketcan");
+    }
+
+    const std::array<const char*, 6> canKeys{
+        "can_interface",
+        "can_receive_timeout_ms",
+        "can_filters",
+        "can_speed_mapping",
+        "can_temperature_mapping",
+        "can_voltage_mapping",
+    };
+    if (config.dataSource == DataSourceKind::Simulator) {
+        for (const char* key : canKeys) {
+            if (values.count(key) != 0) {
+                throw ConfigError(std::string(key) +
+                                  " requires data_source=socketcan");
+            }
+        }
+    } else {
+        SocketCanConfig canConfig;
+        canConfig.interfaceName = requireValue(values, "can_interface");
+        validateCanInterfaceName(canConfig.interfaceName);
+
+        const auto receiveTimeout = parseSize(
+            "can_receive_timeout_ms",
+            requireValue(values, "can_receive_timeout_ms"));
+        if (receiveTimeout == 0 || receiveTimeout > 60000) {
+            throw ConfigError(
+                "can_receive_timeout_ms must be in [1, 60000]");
+        }
+        canConfig.receiveTimeout = std::chrono::milliseconds(
+            static_cast<long long>(receiveTimeout));
+        canConfig.filters =
+            parseCanFilters(requireValue(values, "can_filters"));
+        canConfig.mappings = {
+            parseCanMapping("can_speed_mapping",
+                            requireValue(values, "can_speed_mapping"),
+                            VehicleSignal::SpeedKmh),
+            parseCanMapping("can_temperature_mapping",
+                            requireValue(values, "can_temperature_mapping"),
+                            VehicleSignal::TemperatureC),
+            parseCanMapping("can_voltage_mapping",
+                            requireValue(values, "can_voltage_mapping"),
+                            VehicleSignal::VoltageV),
+        };
+        for (const auto& mapping : canConfig.mappings) {
+            const bool accepted = std::any_of(
+                canConfig.filters.begin(), canConfig.filters.end(),
+                [&mapping](const CanFilterRule& filter) {
+                    return filter.format == mapping.format &&
+                           (mapping.identifier & filter.mask) ==
+                               (filter.identifier & filter.mask);
+                });
+            if (!accepted) {
+                throw ConfigError(
+                    "CAN signal mapping identifier is not accepted by "
+                    "can_filters");
+            }
+        }
+        config.socketCan = std::move(canConfig);
+    }
 
     const auto baseDirectory =
         std::filesystem::absolute(configPath).parent_path();

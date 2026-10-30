@@ -4,7 +4,9 @@
 
 ## 当前验证边界
 
-当前 V2.2 已在 Ubuntu 24.04 / WSL2 的 x86-64 Linux 用户空间完成 Debug、Release、CTest、ASan/UBSan 和 Valgrind 验证。项目只使用 C++17、标准线程、文件系统、文件流和少量 POSIX 时间函数。
+V2.2 已在 Ubuntu 24.04 / WSL2 的 x86-64 Linux 用户空间完成主机端验证。V2.3 增加安全信号退出与 CI 配置；V2.4 增加 Linux SocketCAN 经典 CAN 接收、显式信号映射和可选 vcan 集成测试。本地验证结果以 README 和对应交付报告为准，GitHub Actions 在实际运行前不能标记为通过。
+
+V2.4 当前主机没有 `vcan0`，也没有 `candump`/`cansend`，因此 vcan 测试被测试框架明确标记为跳过。纯解析、接收器替身、超时/停止协作和不存在接口初始化失败可以在不依赖 CAN 硬件时验证；这些结果不能替代真实 socket、物理总线或目标板验证。
 
 截至 2026-10-29，当前主机没有检测到以下常见命令：
 
@@ -42,10 +44,13 @@ i.MX6ULL 通常是 32 位 ARMv7-A/Cortex-A7 平台，但最终 ABI、编译选�
 - C++17 编译器及 libstdc++；
 - POSIX 线程支持，供 `std::thread`、mutex 和 condition_variable 使用；
 - C++17 filesystem 支持；
+- Linux SocketCAN UAPI 头文件和启用了 CAN 子系统的目标内核（仅在使用 `data_source=socketcan` 时需要）；
 - 可写的日志和 CSV 目录；
 - `localtime_r`、`gmtime_r` 和正常工作的系统墙钟。
 
-模拟采集通过 `MonitoringService::AcquireFunction` 注入。硬件移植时可把真实适配器的 `readSample()` 绑定到该回调，无需修改状态判断、日志、CSV 或线程调度。除非实际出现多个复杂数据源和生命周期需求，否则无需先引入虚基类层次。
+模拟采集和 V2.4 的 `SocketCanDataSource` 都通过 `MonitoringService::AcquireFunction` 注入，无需修改状态判断、日志、CSV 或线程调度。未来其他硬件适配器也应保持这条边界；除非实际出现多个复杂数据源和生命周期需求，否则无需先引入虚基类层次。
+
+停止谓词同样通过回调注入。V2.4 SocketCAN 接收器使用有限 `poll` 超时并在每次等待后检查停止请求；其他真实 `readSample()` 也必须使用超时或可取消 I/O，避免永久阻塞导致进程无法及时响应 SIGINT/SIGTERM。
 
 ## 工具链模板
 
@@ -83,8 +88,10 @@ DESTDIR="$PWD/stage-arm" cmake --install build-arm
 ```text
 /usr/bin/car_terminal
 /etc/imx6ull-car-terminal/default.conf
+/etc/imx6ull-car-terminal/socketcan-synthetic-example.conf
 /usr/share/doc/imx6ull-car-terminal/README.md
 /usr/share/doc/imx6ull-car-terminal/IMX6ULL_PORTING_GUIDE.md
+/usr/share/doc/imx6ull-car-terminal/SOCKETCAN_VIRTUAL_PLAN.md
 /var/log/imx6ull-car-terminal/car_terminal.log       # 首次运行创建
 /var/lib/imx6ull-car-terminal/vehicle_data.csv       # 首次运行创建
 ```
@@ -106,6 +113,8 @@ DESTDIR="$PWD/stage-arm" cmake --install build-arm
 
 在接入真实硬件之前，仍应先运行模拟配置，确认 C++ 运行库、线程、文件权限、时钟和进程退出正常。
 
+切换 SocketCAN 前还必须由板卡/BSP 文档确认 CAN 控制器驱动、设备树、管脚复用、收发器、电气终端、位时序和接口启动方式。项目只接受已经存在且处于可用状态的 Linux CAN 网络接口；它不会加载内核模块、创建设备或配置波特率。示例映射只用于合成测试，不得部署为车辆协议。
+
 ## 板端验收清单
 
 - `file` 和 `readelf -h` 显示目标 ARM 架构、正确位数和 ABI。
@@ -116,12 +125,17 @@ DESTDIR="$PWD/stage-arm" cmake --install build-arm
 - 日志和 CSV 目录权限正确，重启后行为符合预期。
 - 系统时间未同步时的时间戳行为被接受或有明确处理策略。
 - 连续运行和磁盘空间不足时不会造成失控增长或死循环。
-- 进程收到服务管理器停止请求时的策略已定义；当前版本尚未实现信号驱动的优雅停止。
+- SIGINT/SIGTERM 停止会排空已入队数据、刷新文件并以约定状态码退出。
 - 真正的数据源适配器有超时、错误传播、断线重试和输入范围校验。
+- SocketCAN 接口名称、标准/扩展帧过滤、接收超时、错误帧/RTR/短帧处理均在目标内核上重新验证。
+- 使用经过授权且可追溯的协议资料替换合成映射，并逐项验证 CAN ID、字节序、符号、缩放、偏移和物理范围。
+- 在目标板上重新验证信号行为，不能以 WSL2 或 CI runner 结果替代板端结果。
+
+SocketCAN 使用与虚拟总线验收指南见 [SOCKETCAN_VIRTUAL_PLAN.md](SOCKETCAN_VIRTUAL_PLAN.md)。该文档不定义真实车辆协议，V2.4 的合成映射也不代表物理 CAN 或 i.MX6ULL 已验证。
 
 ## 明确不在当前范围内的内容
 
-- 未定义或实现任何 CAN 报文、车辆 DBC、诊断协议或真实传感器格式。
+- 未定义任何真实车辆 CAN 报文、DBC、诊断协议或真实传感器格式；仓库中的唯一映射是明确标注的合成测试数据。
 - 未声称已通过 i.MX6ULL 实机测试。
 - 未选择 Yocto、Buildroot、Debian 或厂商 BSP；这些必须由目标项目决定。
 - 未提供硬实时保证或功能安全认证。

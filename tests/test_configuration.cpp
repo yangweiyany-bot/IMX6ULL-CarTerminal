@@ -16,6 +16,18 @@ const char* kValidConfig =
     "log_file=output/app.log\n"
     "csv_file=output/data.csv\n";
 
+std::string validSocketCanConfig() {
+    return std::string(kValidConfig) +
+           "data_source=socketcan\n"
+           "can_interface=vcan0\n"
+           "can_receive_timeout_ms=50\n"
+           "can_filters=standard:0x123:0x7FF,"
+           "extended:0x18FF50E5:0x1FFFFFFF\n"
+           "can_speed_mapping=standard:0x123:0:2:little:unsigned:0.01:0\n"
+           "can_temperature_mapping=standard:0x123:2:2:little:signed:0.1:0\n"
+           "can_voltage_mapping=standard:0x123:4:2:big:unsigned:0.01:0\n";
+}
+
 void expectConfigError(const std::string& content,
                        const std::string& messageFragment) {
     test_support::TempDirectory temp;
@@ -52,6 +64,28 @@ void runConfigurationTests(test_support::TestSuite& suite) {
                 "relative log path should resolve from config directory");
         require(config.csvFile == temp.path() / "output/data.csv",
                 "relative CSV path should resolve from config directory");
+        require(config.dataSource == car_terminal::DataSourceKind::Simulator,
+                "omitted data source should preserve simulator compatibility");
+        require(!config.socketCan.has_value(),
+                "simulator configuration should not create CAN settings");
+    });
+
+    suite.run("valid SocketCAN configuration", [] {
+        TempDirectory temp;
+        const auto path = temp.path() / "socketcan.conf";
+        writeText(path, validSocketCanConfig());
+        const auto config = car_terminal::loadConfig(path);
+        require(config.dataSource == car_terminal::DataSourceKind::SocketCan,
+                "SocketCAN source selection");
+        require(config.socketCan.has_value(), "SocketCAN settings required");
+        requireEqual(config.socketCan->interfaceName, std::string("vcan0"),
+                     "CAN interface");
+        requireEqual(config.socketCan->receiveTimeout.count(), 50LL,
+                     "CAN receive timeout");
+        requireEqual(config.socketCan->filters.size(), std::size_t{2},
+                     "CAN filter count");
+        requireEqual(config.socketCan->mappings.size(), std::size_t{3},
+                     "CAN mapping count");
     });
 
     suite.run("missing configuration file", [] {
@@ -141,5 +175,87 @@ void runConfigurationTests(test_support::TestSuite& suite) {
                         "csv_file=test.conf");
         expectConfigError(content,
                           "must not overwrite the configuration file");
+    });
+
+    suite.run("invalid data source is rejected", [] {
+        expectConfigError(std::string(kValidConfig) +
+                              "data_source=automatic\n",
+                          "data_source must be");
+    });
+
+    suite.run("simulator rejects stray CAN configuration", [] {
+        expectConfigError(std::string(kValidConfig) +
+                              "can_interface=vcan0\n",
+                          "requires data_source=socketcan");
+    });
+
+    suite.run("SocketCAN configuration requires every mapping", [] {
+        std::string content = validSocketCanConfig();
+        const auto begin = content.find("can_voltage_mapping=");
+        content.erase(begin);
+        expectConfigError(content, "can_voltage_mapping");
+    });
+
+    suite.run("SocketCAN invalid standard identifier is rejected", [] {
+        std::string content = validSocketCanConfig();
+        const auto begin = content.find(
+            "can_filters=standard:0x123:0x7FF,");
+        content.replace(begin,
+                        std::string("can_filters=standard:0x123:0x7FF,")
+                            .size(),
+                        "can_filters=standard:0x800:0x7FF,");
+        expectConfigError(content, "filter identifier");
+    });
+
+    suite.run("SocketCAN duplicate filters are rejected", [] {
+        std::string content = validSocketCanConfig();
+        const auto begin = content.find(
+            "can_filters=standard:0x123:0x7FF,"
+            "extended:0x18FF50E5:0x1FFFFFFF");
+        content.replace(
+            begin,
+            std::string("can_filters=standard:0x123:0x7FF,"
+                        "extended:0x18FF50E5:0x1FFFFFFF")
+                .size(),
+            "can_filters=standard:0x123:0x7FF,"
+            "standard:0x123:0x7FF");
+        expectConfigError(content, "Duplicate can_filters");
+    });
+
+    suite.run("SocketCAN mapping payload overflow is rejected", [] {
+        std::string content = validSocketCanConfig();
+        const auto begin = content.find(
+            "can_speed_mapping=standard:0x123:0:2");
+        content.replace(
+            begin,
+            std::string("can_speed_mapping=standard:0x123:0:2").size(),
+            "can_speed_mapping=standard:0x123:7:2");
+        expectConfigError(content, "exceeds the classic CAN payload");
+    });
+
+    suite.run("SocketCAN mappings must be accepted by filters", [] {
+        std::string content = validSocketCanConfig();
+        const auto begin = content.find(
+            "can_voltage_mapping=standard:0x123");
+        content.replace(
+            begin,
+            std::string("can_voltage_mapping=standard:0x123").size(),
+            "can_voltage_mapping=standard:0x124");
+        expectConfigError(content, "not accepted by can_filters");
+    });
+
+    suite.run("SocketCAN timeout and interface are validated", [] {
+        std::string content = validSocketCanConfig();
+        auto begin = content.find("can_receive_timeout_ms=50");
+        content.replace(begin,
+                        std::string("can_receive_timeout_ms=50").size(),
+                        "can_receive_timeout_ms=0");
+        expectConfigError(content, "must be in [1, 60000]");
+
+        content = validSocketCanConfig();
+        begin = content.find("can_interface=vcan0");
+        content.replace(begin, std::string("can_interface=vcan0").size(),
+                        "can_interface=bad interface");
+        expectConfigError(content, "unsupported characters");
     });
 }

@@ -2,6 +2,7 @@
 
 #include "car_terminal/blocking_queue.h"
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <exception>
@@ -17,12 +18,14 @@ MonitoringService::MonitoringService(
     std::chrono::milliseconds samplingInterval,
     std::size_t queueCapacity,
     AcquireFunction acquire,
-    ProcessFunction process)
+    ProcessFunction process,
+    CancelFunction cancelAcquisition)
     : sampleCount_(sampleCount),
       samplingInterval_(samplingInterval),
       queueCapacity_(queueCapacity),
       acquire_(std::move(acquire)),
-      process_(std::move(process)) {
+      process_(std::move(process)),
+      cancelAcquisition_(std::move(cancelAcquisition)) {
     if (sampleCount_ == 0) {
         throw std::invalid_argument("Monitoring sample count must be positive");
     }
@@ -38,16 +41,29 @@ MonitoringService::MonitoringService(
     }
 }
 
-void MonitoringService::run() {
+void MonitoringService::run(StopFunction externalStopRequested) {
     BlockingQueue<VehicleData> queue(queueCapacity_);
-    std::atomic<bool> stopRequested{false};
+    std::atomic<bool> internalStopRequested{false};
+    const auto shouldStop = [&] {
+        return internalStopRequested.load() ||
+               (externalStopRequested && externalStopRequested());
+    };
+
     std::mutex intervalMutex;
     std::condition_variable intervalCondition;
     std::mutex failureMutex;
     std::exception_ptr failure;
 
     const auto requestStop = [&] {
-        stopRequested.store(true);
+        internalStopRequested.store(true);
+        if (cancelAcquisition_) {
+            try {
+                cancelAcquisition_();
+            } catch (...) {
+                // Cancellation must remain best-effort so queue closure and
+                // thread joining still occur during another failure.
+            }
+        }
         queue.close();
         intervalCondition.notify_all();
     };
@@ -65,20 +81,38 @@ void MonitoringService::run() {
     const auto producer = [&] {
         try {
             for (std::size_t index = 0; index < sampleCount_; ++index) {
-                if (stopRequested.load()) {
+                if (shouldStop()) {
                     break;
                 }
                 if (!queue.push(acquire_())) {
                     break;
                 }
+                // A stop request that arrives during acquisition must not
+                // discard the sample that has already been acquired.
+                if (shouldStop()) {
+                    break;
+                }
                 if (index + 1 < sampleCount_) {
                     std::unique_lock<std::mutex> lock(intervalMutex);
-                    intervalCondition.wait_for(
-                        lock,
-                        samplingInterval_,
-                        [&] { return stopRequested.load(); });
+                    const auto deadline =
+                        std::chrono::steady_clock::now() + samplingInterval_;
+                    constexpr auto kStopPollInterval =
+                        std::chrono::milliseconds(10);
+                    while (!shouldStop()) {
+                        const auto wakeTime = std::min(
+                            deadline,
+                            std::chrono::steady_clock::now() +
+                                kStopPollInterval);
+                        if (intervalCondition.wait_until(lock, wakeTime) ==
+                                std::cv_status::timeout &&
+                            std::chrono::steady_clock::now() >= deadline) {
+                            break;
+                        }
+                    }
                 }
             }
+            queue.close();
+        } catch (const AcquisitionStopped&) {
             queue.close();
         } catch (...) {
             captureFailure();

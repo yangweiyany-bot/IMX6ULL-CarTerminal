@@ -1,8 +1,8 @@
-# IMX6ULL Smart Car Terminal V2.2
+# IMX6ULL Smart Car Terminal V2.4
 
-这是一个面向嵌入式 Linux 学习与实习作品展示的 C++17 智能车载终端模拟项目。程序在两个线程中模拟车辆数据采集和监测处理，检测车速、温度与电压状态，并把运行日志及采样数据分别保存为日志文件和 CSV。
+这是一个面向嵌入式 Linux 学习与实习作品展示的 C++17 智能车载终端项目。默认模式使用确定性模拟数据；可选 SocketCAN 模式通过 Linux 原生经典 CAN socket 接收原始帧，经显式配置的映射转换为车辆数据。采集与处理仍使用两个线程，检测车速、温度与电压状态，并把日志及采样数据写入文件。
 
-> 当前版本只在 Ubuntu 24.04 / WSL2 的 x86-64 Linux 用户空间中完成构建和测试。数据来自确定性的模拟器，不是传感器、CAN 总线或真实车辆数据；项目尚未经过 i.MX6ULL 实机验证。所有报警阈值仅为演示参数，不是车辆诊断或安全标准。
+> 当前版本只在 Ubuntu 24.04 / WSL2 的 x86-64 Linux 用户空间中完成适用范围内的本地构建和测试。当前环境没有 `vcan0`，因此真实 SocketCAN 收发集成测试未执行；解析测试使用明确标注的合成字节。项目没有真实车辆协议、DBC 或 i.MX6ULL 实机验证。报警阈值仅为演示参数，不是车辆诊断或安全标准。GitHub Actions 尚未实际运行。
 
 ## 功能
 
@@ -15,22 +15,33 @@
 - 不依赖测试框架的命令行自动化测试，通过 CTest 执行。
 - 提供 `--help`、`--version` 和 `--config <path>` 命令行接口。
 - 提供 GNUInstallDirs 安装规则、安装版配置和 i.MX6ULL 移植准备文档。
+- SIGINT/SIGTERM 只在信号处理函数中记录信号，主流程随后停止采集、排空队列并连接线程。
+- GitHub Actions 配置 Debug、Release、ASan/UBSan 和原生 Ubuntu ThreadSanitizer 作业。
+- Linux SocketCAN 经典 CAN 接收器：RAII 文件描述符、接口绑定、内核过滤、错误帧接收、`poll` 超时和 EINTR 处理。
+- 原始 CAN 帧与 `VehicleData` 解析分离；映射显式描述 ID、格式、字节位置、长度、字节序、符号、缩放和偏移。
+- 默认模拟模式保持兼容；SocketCAN 配置缺失或接口不可用时明确失败，不静默回退模拟器。
 
 ## 工程结构
 
 ```text
 .
+├── .github/workflows/
+│   └── ci.yml
 ├── CMakeLists.txt
 ├── README.md
 ├── cmake/toolchains/
 │   └── imx6ull-linux-example.cmake
 ├── config/
 │   ├── default.conf
-│   └── default-install.conf.in
+│   ├── default-install.conf.in
+│   └── socketcan-synthetic-example.conf
 ├── docs/
-│   └── IMX6ULL_PORTING_GUIDE.md
+│   ├── IMX6ULL_PORTING_GUIDE.md
+│   └── SOCKETCAN_VIRTUAL_PLAN.md
 ├── include/car_terminal/
 │   ├── blocking_queue.h
+│   ├── can_parser.h
+│   ├── can_types.h
 │   ├── cli.h
 │   ├── configuration.h
 │   ├── csv_recorder.h
@@ -38,9 +49,13 @@
 │   ├── monitoring_service.h
 │   ├── sample_processor.h
 │   ├── simulator.h
+│   ├── signal_handler.h
+│   ├── socket_can_receiver.h
+│   ├── socket_can_source.h
 │   ├── status_checker.h
 │   └── vehicle_data.h
 ├── src/
+│   ├── can_parser.cpp
 │   ├── configuration.cpp
 │   ├── cli.cpp
 │   ├── csv_recorder.cpp
@@ -48,16 +63,25 @@
 │   ├── monitoring_service.cpp
 │   ├── sample_processor.cpp
 │   ├── simulator.cpp
+│   ├── signal_handler.cpp
+│   ├── socket_can_receiver.cpp
+│   ├── socket_can_source.cpp
 │   └── status_checker.cpp
 ├── tests/
 │   ├── test_configuration.cpp
 │   ├── test_blocking_queue.cpp
+│   ├── test_can_parser.cpp
 │   ├── test_cli.cpp
 │   ├── test_io.cpp
 │   ├── test_main.cpp
+│   ├── test_signal.cpp
+│   ├── test_signal_shutdown.sh
+│   ├── test_socket_can.cpp
 │   ├── test_status.cpp
 │   ├── test_support.h
-│   └── test_threading.cpp
+│   ├── test_threading.cpp
+│   ├── test_vcan_integration.sh
+│   └── socketcan_test_sender.cpp
 └── main.cpp
 ```
 
@@ -71,6 +95,8 @@
 4. `MonitoringService` 管理生产者、消费者、停止通知、异常传播和线程连接。
 5. `status_checker` 是无共享状态的核心业务逻辑，可脱离线程独立测试。
 6. `SampleProcessor` 在消费线程中显示数据，调用日志模块并写入 CSV。
+7. `SocketCanReceiver` 仅负责 Linux socket、过滤、超时及原始帧边界；`CanVehicleDataParser` 仅负责配置映射和数值转换。
+8. `SocketCanDataSource` 在接收超时后继续等待，并通过通用 `AcquisitionStopped` 与现有监控线程协作退出。
 
 ```text
 VehicleSimulator (producer thread)
@@ -85,7 +111,18 @@ SampleProcessor (consumer thread)
         └── CsvRecorder
 ```
 
-队列容量可配置。队列满时生产者阻塞，不忙等待；队列空时消费者阻塞。任何线程发生异常都会关闭队列、通知所有等待者，两个线程完成 `join` 后异常才传播到主线程，因此不会遗留可连接线程。
+SocketCAN 模式只替换生产者侧采集回调：
+
+```text
+Linux PF_CAN socket
+        │ classic RawCanFrame
+        ▼
+CanVehicleDataParser ──► VehicleData ──► 原有 BlockingQueue/处理链
+```
+
+队列容量可配置。队列满时生产者阻塞，不忙等待；队列空时消费者阻塞。任何线程发生异常都会关闭队列、通知所有等待者，两个线程完成 `join` 后异常才传播到主线程，因此不会遗留可连接线程。`AcquireFunction` 签名保持不变；SocketCAN 另外注册一个只置原子标志的取消回调，使消费者 I/O 失败时也能终止正在进行的“超时—重试”采集循环。
+
+收到 SIGINT 或 SIGTERM 后，异步信号处理函数只写入 `volatile sig_atomic_t`。采集线程在开始下一次采集前观察该标志；若信号在一次采集中到达，该样本仍会入队。随后生产者关闭队列，消费者排空已入队样本并退出，两个线程均由主线程 `join`。采集回调本身仍必须具有有界超时，否则任何同步关闭方案都无法中断永久阻塞的硬件读取。
 
 ## 开发环境与依赖
 
@@ -105,38 +142,40 @@ SampleProcessor (consumer thread)
 在项目根目录执行：
 
 ```bash
-cmake -S . -B build_v22 -G Ninja \
+cmake -S . -B build_v24 -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
-cmake --build build_v22 --verbose
-ctest --test-dir build_v22 --output-on-failure
+cmake --build build_v24 --verbose
+ctest --test-dir build_v24 --output-on-failure
 ```
 
 运行：
 
 ```bash
-./build_v22/car_terminal --config config/default.conf
+./build_v24/car_terminal --config config/default.conf
 ```
 
 不传参数时默认读取当前工作目录下的 `config/default.conf`：
 
 ```bash
-./build_v22/car_terminal
+./build_v24/car_terminal
 ```
 
 也保留单个位置参数形式以兼容 V2.0：
 
 ```bash
-./build_v22/car_terminal config/default.conf
+./build_v24/car_terminal config/default.conf
 ```
 
 命令行帮助和版本：
 
 ```bash
-./build_v22/car_terminal --help
-./build_v22/car_terminal --version
+./build_v24/car_terminal --help
+./build_v24/car_terminal --version
 ```
 
 未知选项、缺少 `--config` 路径或多余参数会显示用法并以状态码 2 退出。配置错误同样以状态码 2 退出；运行期文件或处理错误以状态码 1 退出。`log_file` 和 `csv_file` 不允许指向同一文件，也不允许覆盖当前配置文件，以避免日志追加与 CSV 截断破坏配置或彼此数据。
+
+SIGINT 按约定以 130 退出，SIGTERM 以 143 退出。退出前会完成已入队样本处理、刷新日志和 CSV，并输出文件路径。
 
 ## 安装
 
@@ -156,8 +195,10 @@ cmake --install build_install
 ```text
 install-root/bin/car_terminal
 install-root/etc/imx6ull-car-terminal/default.conf
+install-root/etc/imx6ull-car-terminal/socketcan-synthetic-example.conf
 install-root/share/doc/imx6ull-car-terminal/README.md
 install-root/share/doc/imx6ull-car-terminal/IMX6ULL_PORTING_GUIDE.md
+install-root/share/doc/imx6ull-car-terminal/SOCKETCAN_VIRTUAL_PLAN.md
 ```
 
 安装版程序应显式指定安装版配置，因此可从任意工作目录启动：
@@ -183,8 +224,52 @@ install-root/share/doc/imx6ull-car-terminal/IMX6ULL_PORTING_GUIDE.md
 | `queue_capacity` | 生产者—消费者队列容量 | 4 |
 | `log_file` | 日志路径 | `../runtime/car_terminal.log` |
 | `csv_file` | CSV 路径 | `../runtime/vehicle_data.csv` |
+| `data_source` | `simulator` 或 `socketcan` | `simulator` |
 
 相对输出路径相对于配置文件所在目录解析，而不是相对于可执行文件。配置解析器会拒绝未知键、重复键、缺失键、非数字值和不合理范围。
+
+## SocketCAN 配置与运行
+
+只有 `data_source=socketcan` 时才允许并要求以下键：
+
+| 参数 | 含义 |
+|---|---|
+| `can_interface` | Linux CAN 网络接口名称，例如 `can0` 或已存在的 `vcan0` |
+| `can_receive_timeout_ms` | 每次 `poll` 的最大等待时间，范围 1–60000 ms |
+| `can_filters` | 逗号分隔的 `format:id:mask` 内核过滤规则 |
+| `can_speed_mapping` | 车速映射 |
+| `can_temperature_mapping` | 温度映射 |
+| `can_voltage_mapping` | 电压映射 |
+
+过滤格式中的 `format` 是 `standard` 或 `extended`。标准 ID 最大为 `0x7FF`，扩展 ID 最大为 `0x1FFFFFFF`；掩码必须非零且适合对应格式。映射 ID 必须能被至少一条过滤规则接收。
+
+每条信号映射使用：
+
+```text
+format:id:byte_offset:byte_length:byte_order:value_type:scale:value_offset
+```
+
+- `byte_order`：`little` 或 `big`；
+- `value_type`：`unsigned` 或二进制补码 `signed`；
+- 字节范围必须落在经典 CAN 的 8 字节负载内；实际帧 DLC 仍必须覆盖映射范围；
+- 缩放和偏移必须为有限数，缩放不能为零；计算结果必须能表示为有限 `double`。
+
+[config/socketcan-synthetic-example.conf](config/socketcan-synthetic-example.conf) 仅定义用于软件/vcan 测试的合成 `0x123` 帧，不代表任何真实车辆协议。运行方式：
+
+```bash
+./build_v24/car_terminal \
+  --config config/socketcan-synthetic-example.conf
+```
+
+接口不存在、映射不完整、过滤器非法或 socket/bind 失败时，程序输出明确错误并非零退出，不会回退模拟模式。读取使用有限 `poll` 超时；超时不生成虚假样本，收到 SIGINT/SIGTERM 后最迟在当前超时结束时进入正常排空流程。经典远程帧和错误帧会被明确拒绝为车辆数据；CAN FD 未启用且不在 V2.4 范围内。
+
+若系统已经存在可用的 `vcan0`，可运行：
+
+```bash
+ctest --test-dir build_v24 -R vcan --output-on-failure -V
+```
+
+测试会发送合成帧并验证过滤、超时等待、解析和 CSV；若 `vcan0` 不存在则返回 CTest skip code 77，必须记录为“未执行”。项目不会自动创建接口、加载模块或安装 can-utils。
 
 边界规则经过自动化测试：
 
@@ -211,15 +296,34 @@ install-root/share/doc/imx6ull-car-terminal/IMX6ULL_PORTING_GUIDE.md
 - 有界队列的顺序、全部样本处理、消费者异常后的停止、异常传播和线程连接。
 - 满队列生产者和空队列消费者在关闭时被唤醒，以及关闭后队列数据的排空。
 - 并发日志/CSV 完整性、真实写失败、生产者异常和命令行解析。
+- 正常监测完成、SIGINT/SIGTERM 标志记录、信号停止后的已采集样本排空。
+- 进程级 SIGTERM 测试：退出码、停止日志和 CSV 完整性。
+- 标准/扩展 CAN ID、过滤器、DLC、大小端、有符号转换、缩放/偏移、溢出和多帧完整性。
+- SocketCAN 超时重试、停止协作、接收错误传播和不存在接口的初始化错误。
+- 可选 vcan 集成测试；只有环境中已有 `vcan0` 时才实际发送帧。
+
+## GitHub Actions CI
+
+`.github/workflows/ci.yml` 在 Ubuntu 24.04 runner 上配置以下作业：
+
+- Debug 和 Release 的 CMake、Ninja 构建与完整 CTest；
+- ASan/UBSan 构建与 CTest；
+- 独立的 ThreadSanitizer 构建与 CTest；
+- 独立 SocketCAN vcan 作业：在 runner 内准备 `vcan0`，运行集成测试，并把任何 skip 视为失败。
+
+TSan 和 vcan 作业都没有设置 `continue-on-error`，检测或环境准备失败会保留日志并使作业失败。当前仓库尚未推送和触发该工作流，因此只能确认配置文件已完成本地语法与内容检查，不能宣称 GitHub CI、原生 Ubuntu TSan 或 CI vcan 已通过。
 
 ## 已知限制
 
-- 当前仅有模拟采集，没有 CAN、UART、I2C、SPI、GPIO 或真实传感器接口。
+- 默认采集仍为模拟器；可选 SocketCAN 接收和可配置解析已经实现，但当前没有真实 CAN/vcan 收发验证，也没有任何已证实车辆映射。
+- 没有 UART、I2C、SPI、GPIO 或真实传感器接口。
 - 没有在 ARM 或 i.MX6ULL 开发板上交叉编译、部署或实机验证。
 - `std::thread` 调度不是硬实时，采样间隔不能作为实时保证。
 - CSV 每次运行覆盖，日志则追加；生产系统通常还需要轮转、存储上限和掉电保护。
 - CSV 使用系统墙钟记录 UTC 时间；系统校时可能让相邻时间戳不单调，样本顺序应以 `sample` 字段为准。
 - 模拟器数值固定递增/递减，不代表任何真实车辆模型。
+- 信号停止无法抢占永久阻塞的采集回调；未来硬件数据源必须提供读取超时。
+- 只支持经典 CAN 0–8 字节数据帧；CAN FD 和远程帧数据解析不在范围内，错误帧被报告而非转换为车辆数据。
 
 ## 后续 i.MX6ULL 移植计划
 
@@ -230,3 +334,13 @@ install-root/share/doc/imx6ull-car-terminal/IMX6ULL_PORTING_GUIDE.md
 3. 按实际硬件方案接入 SocketCAN、UART、I2C/SPI 或 sysfs/libgpiod，并为设备 I/O 设置超时和重连。
 4. 在开发板上验证线程、文件系统、时钟、异常退出和长时间运行，不把 x86 测试结果当作实机结果。
 5. 根据部署需求增加 systemd 服务、日志轮转、只读根文件系统适配和交叉平台 CI。
+
+SocketCAN 使用方法、合成帧格式、vcan 前置条件和验收边界见 [docs/SOCKETCAN_VIRTUAL_PLAN.md](docs/SOCKETCAN_VIRTUAL_PLAN.md)。当前环境没有 `vcan0`，所以只完成了构建、纯解析/替身单元测试和不存在接口错误路径验证，未完成真实 socket 收发集成验证。
+
+## V2.4 相对于 V2.3
+
+- 新增 Linux SocketCAN 经典 CAN 接收器、RAII 资源管理、过滤、超时和系统错误处理。
+- 新增独立原始帧模型、可配置三信号映射解析器及数据源适配器。
+- 默认模拟模式保持兼容；增加明确的 SocketCAN 示例配置与错误路径。
+- 新增 27 项 CAN、配置与采集取消相关单元行为覆盖及可选 vcan 进程级集成测试。
+- 保留 V2.3 的信号安全退出、队列排空、CI 和所有原有测试。
