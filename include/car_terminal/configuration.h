@@ -13,6 +13,10 @@
 
 namespace car_terminal {
 
+inline constexpr std::uintmax_t kDefaultLogMaxSizeBytes = 10U * 1024U * 1024U;
+inline constexpr std::uintmax_t kDefaultCsvMaxSizeBytes = 50U * 1024U * 1024U;
+inline constexpr std::size_t kDefaultRotatedFileCount = 5;
+
 struct AlarmThresholds {
     double lowVoltageV{};
     double highTemperatureC{};
@@ -39,6 +43,9 @@ struct AppConfig {
     std::size_t queueCapacity{};
     std::filesystem::path logFile;
     std::filesystem::path csvFile;
+    std::uintmax_t logMaxSizeBytes{kDefaultLogMaxSizeBytes};
+    std::uintmax_t csvMaxSizeBytes{kDefaultCsvMaxSizeBytes};
+    std::size_t rotatedFileCount{kDefaultRotatedFileCount};
     DataSourceKind dataSource{DataSourceKind::Simulator};
     std::optional<SocketCanConfig> socketCan;
 };

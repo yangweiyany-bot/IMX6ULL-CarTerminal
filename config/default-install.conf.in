@@ -12,6 +12,10 @@ sample_count=10
 sampling_interval_ms=100
 queue_capacity=4
 
+log_max_size_bytes=10485760
+csv_max_size_bytes=52428800
+rotated_file_count=5
+
 # Paths are relative to this installed configuration file. With the standard
 # layout they resolve below the selected CMake installation prefix.
 log_file=@CAR_TERMINAL_INSTALL_LOG_PATH@

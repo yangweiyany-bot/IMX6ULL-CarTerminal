@@ -11,6 +11,8 @@ cmake-build-*/
 runtime/
 *.log
 *.csv
+*.log.*
+*.csv.*
 
 # Editor and temporary files
 .vscode/

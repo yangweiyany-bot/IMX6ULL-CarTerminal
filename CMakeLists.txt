@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(IMX6ULL_CarTerminal VERSION 2.5.0 LANGUAGES CXX)
+project(IMX6ULL_CarTerminal VERSION 2.6.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,6 +26,10 @@ set(CAR_TERMINAL_INSTALL_CONFIG_DIR
     "${CMAKE_INSTALL_FULL_SYSCONFDIR}/${CAR_TERMINAL_INSTALL_NAME}")
 set(CAR_TERMINAL_INSTALL_DOC_DIR
     "${CMAKE_INSTALL_DATAROOTDIR}/doc/${CAR_TERMINAL_INSTALL_NAME}")
+set(CAR_TERMINAL_INSTALL_SYSTEMD_DIR
+    "lib/systemd/system")
+set(CAR_TERMINAL_INSTALL_SUPPORT_DIR
+    "${CMAKE_INSTALL_DATAROOTDIR}/${CAR_TERMINAL_INSTALL_NAME}")
 
 set(CAR_TERMINAL_INSTALL_CONFIG_ABSOLUTE_DIR
     "${CMAKE_INSTALL_FULL_SYSCONFDIR}/${CAR_TERMINAL_INSTALL_NAME}")
@@ -45,6 +49,20 @@ configure_file(
     "${CMAKE_CURRENT_BINARY_DIR}/generated/default.conf"
     @ONLY
 )
+set(CAR_TERMINAL_SYSTEMD_LOG_FILE
+    "/var/log/${CAR_TERMINAL_INSTALL_NAME}/car_terminal.log")
+set(CAR_TERMINAL_SYSTEMD_CSV_FILE
+    "/var/lib/${CAR_TERMINAL_INSTALL_NAME}/vehicle_data.csv")
+configure_file(
+    config/systemd-simulator.conf.in
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/systemd.conf"
+    @ONLY
+)
+configure_file(
+    packaging/systemd/imx6ull-car-terminal.service.in
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/imx6ull-car-terminal.service"
+    @ONLY
+)
 
 function(enable_strict_warnings target_name)
     target_compile_options(${target_name} PRIVATE
@@ -59,6 +77,7 @@ add_library(car_terminal_core
     src/cli.cpp
     src/configuration.cpp
     src/csv_recorder.cpp
+    src/file_rotation.cpp
     src/logger.cpp
     src/monitoring_service.cpp
     src/sample_processor.cpp
@@ -91,6 +110,10 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/generated/default.conf"
     DESTINATION "${CAR_TERMINAL_INSTALL_CONFIG_DIR}"
     COMPONENT Runtime
 )
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/generated/systemd.conf"
+    DESTINATION "${CAR_TERMINAL_INSTALL_CONFIG_DIR}"
+    COMPONENT Runtime
+)
 install(FILES
     config/continuous-simulator-example.conf
     config/socketcan-synthetic-example.conf
@@ -98,8 +121,24 @@ install(FILES
     COMPONENT Runtime
 )
 install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/imx6ull-car-terminal.service"
+    DESTINATION "${CAR_TERMINAL_INSTALL_SYSTEMD_DIR}"
+    COMPONENT Runtime
+)
+install(FILES packaging/systemd/socketcan-capability.conf
+    DESTINATION "${CAR_TERMINAL_INSTALL_SUPPORT_DIR}/systemd"
+    COMPONENT Runtime
+)
+install(PROGRAMS
+    scripts/install-systemd.sh
+    scripts/uninstall-systemd.sh
+    DESTINATION "${CAR_TERMINAL_INSTALL_SUPPORT_DIR}/scripts"
+    COMPONENT Runtime
+)
+install(FILES
     README.md
     docs/IMX6ULL_PORTING_GUIDE.md
+    docs/SYSTEMD_DEPLOYMENT.md
     docs/SOCKETCAN_VIRTUAL_PLAN.md
     DESTINATION "${CAR_TERMINAL_INSTALL_DOC_DIR}"
     COMPONENT Documentation
@@ -135,6 +174,25 @@ if(BUILD_TESTING)
                 "$<TARGET_FILE:car_terminal>"
     )
     set_tests_properties(car_terminal_signal_shutdown PROPERTIES TIMEOUT 30)
+
+    add_test(
+        NAME car_terminal_systemd_scripts
+        COMMAND "${BASH_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_systemd_scripts.sh"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/install-systemd.sh"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/uninstall-systemd.sh"
+                "${CMAKE_CURRENT_BINARY_DIR}/generated/imx6ull-car-terminal.service"
+                "${CMAKE_CURRENT_SOURCE_DIR}/packaging/systemd/socketcan-capability.conf"
+    )
+    set_tests_properties(car_terminal_systemd_scripts PROPERTIES TIMEOUT 30)
+
+    add_test(
+        NAME car_terminal_systemd_unit
+        COMMAND "${BASH_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_systemd_unit.sh"
+                "${CMAKE_CURRENT_BINARY_DIR}/generated/imx6ull-car-terminal.service"
+    )
+    set_tests_properties(car_terminal_systemd_unit PROPERTIES TIMEOUT 30)
 
     add_executable(socketcan_test_sender tests/socketcan_test_sender.cpp)
     enable_strict_warnings(socketcan_test_sender)

@@ -9,6 +9,9 @@
 namespace car_terminal {
 namespace {
 
+constexpr const char* kCsvHeader =
+    "sample,timestamp_utc,speed_kmh,temperature_c,voltage_v,status\n";
+
 void createParentDirectory(const std::filesystem::path& filePath) {
     const auto parent = filePath.parent_path();
     if (parent.empty()) {
@@ -60,33 +63,71 @@ std::string csvStatus(const VehicleStatus& status) {
 }  // namespace
 
 CsvRecorder::CsvRecorder(const std::filesystem::path& filePath)
-    : filePath_(filePath) {
+    : CsvRecorder(filePath, {}) {}
+
+CsvRecorder::CsvRecorder(const std::filesystem::path& filePath,
+                         const FileRotationPolicy rotationPolicy)
+    : filePath_(filePath), rotationPolicy_(rotationPolicy) {
+    validateRotationPolicy(rotationPolicy_, "CSV");
     createParentDirectory(filePath_);
+    openNewFile();
+}
+
+void CsvRecorder::openNewFile() {
+    file_.clear();
     file_.open(filePath_, std::ios::out | std::ios::trunc);
     if (!file_.is_open()) {
         throw std::runtime_error("Cannot open CSV file: " +
                                  filePath_.string());
     }
-    file_ << "sample,timestamp_utc,speed_kmh,temperature_c,voltage_v,status\n";
+    file_ << kCsvHeader;
     file_.flush();
     if (!file_) {
         throw std::runtime_error("Failed to write CSV header: " +
                                  filePath_.string());
     }
+    currentSize_ = std::char_traits<char>::length(kCsvHeader);
+}
+
+void CsvRecorder::rotateIfNeeded(const std::size_t pendingBytes) {
+    const auto headerSize = std::char_traits<char>::length(kCsvHeader);
+    if (currentSize_ == headerSize ||
+        !shouldRotateFile(currentSize_, pendingBytes, rotationPolicy_)) {
+        return;
+    }
+
+    file_.flush();
+    if (!file_) {
+        throw std::runtime_error("Failed to flush CSV file before rotation: " +
+                                 filePath_.string());
+    }
+    file_.close();
+    if (file_.fail()) {
+        throw std::runtime_error("Failed to close CSV file for rotation: " +
+                                 filePath_.string());
+    }
+    rotateFile(filePath_, rotationPolicy_);
+    openNewFile();
 }
 
 void CsvRecorder::record(const VehicleData& data,
                          const VehicleStatus& status) {
+    std::ostringstream output;
+    output << data.sampleNumber << ',' << formatTimestamp(data.timestamp)
+           << ',' << std::fixed << std::setprecision(2) << data.speedKmh << ','
+           << data.temperatureC << ',' << data.voltageV << ','
+           << csvStatus(status) << '\n';
+    const std::string row = output.str();
+
     std::lock_guard<std::mutex> lock(mutex_);
-    file_ << data.sampleNumber << ',' << formatTimestamp(data.timestamp) << ','
-          << std::fixed << std::setprecision(2) << data.speedKmh << ','
-          << data.temperatureC << ',' << data.voltageV << ','
-          << csvStatus(status) << '\n';
+    rotateIfNeeded(row.size());
+    file_ << row;
     file_.flush();
     if (!file_) {
         throw std::runtime_error("Failed to write CSV file: " +
                                  filePath_.string());
     }
+    currentSize_ += row.size();
 }
 
 const std::filesystem::path& CsvRecorder::filePath() const noexcept {

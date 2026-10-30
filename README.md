@@ -1,6 +1,6 @@
-# IMX6ULL Smart Car Terminal V2.5
+# IMX6ULL Smart Car Terminal V2.6
 
-这是一个面向嵌入式 Linux 学习与实习作品展示的 C++17 智能车载终端项目。默认使用兼容旧版本的有限次数模拟监控；也可选择连续模式，持续运行到收到 SIGINT/SIGTERM。可选 SocketCAN 模式通过 Linux 原生经典 CAN socket 接收原始帧，经显式配置的映射转换为车辆数据。采集与处理使用两个线程，检测车速、温度与电压状态，并把日志及采样数据写入文件。
+这是一个面向嵌入式 Linux 学习与实习作品展示的 C++17 智能车载终端项目。默认使用兼容旧版本的有限次数模拟监控；也可选择连续模式，持续运行到收到 SIGINT/SIGTERM。日志和 CSV 支持线程安全的大小轮转与保留上限。可选 SocketCAN 模式通过 Linux 原生经典 CAN socket 接收原始帧，经显式配置的映射转换为车辆数据。
 
 > 当前版本只在 Ubuntu 24.04 / WSL2 的 x86-64 Linux 用户空间中完成适用范围内的本地构建和测试。当前环境没有 `vcan0`，因此真实 SocketCAN 收发集成测试未执行；解析测试使用明确标注的合成字节。项目没有真实车辆协议、DBC 或 i.MX6ULL 实机验证。报警阈值仅为演示参数，不是车辆诊断或安全标准。GitHub Actions 尚未实际运行。
 
@@ -10,12 +10,14 @@
 - 监测低电压、高温与超速状态，并明确显示 `NORMAL` 或 `WARNING`。
 - 线程安全的 INFO、WARNING、ERROR 日志模块，同时输出到控制台和文件。
 - CSV 数据记录，包含样本编号、UTC 时间戳、三项数值和状态。
+- 日志和 CSV 使用 rename 轮转，CSV 每个新文件重新写入表头，并限制归档数量。
 - 有界生产者—消费者队列：采集线程产生样本，处理线程判断状态并写入日志/CSV。
 - `finite` 与 `continuous` 两种明确运行模式；连续模式由信号安全停止并排空队列。
 - CMake + Ninja 构建，启用 C++17 和 `-Wall -Wextra -Wpedantic`。
 - 不依赖测试框架的命令行自动化测试，通过 CTest 执行。
 - 提供 `--help`、`--version` 和 `--config <path>` 命令行接口。
 - 提供 GNUInstallDirs 安装规则、安装版配置和 i.MX6ULL 移植准备文档。
+- 提供可选 systemd unit、连续模拟服务配置和安全的安装/卸载脚本。
 - SIGINT/SIGTERM 只在信号处理函数中记录信号，主流程随后停止采集、排空队列并连接线程。
 - GitHub Actions 配置 Debug、Release、ASan/UBSan 和原生 Ubuntu ThreadSanitizer 作业。
 - Linux SocketCAN 经典 CAN 接收器：RAII 文件描述符、接口绑定、内核过滤、错误帧接收、`poll` 超时和 EINTR 处理。
@@ -36,9 +38,11 @@
 │   ├── continuous-simulator-example.conf
 │   ├── default.conf
 │   ├── default-install.conf.in
+│   ├── systemd-simulator.conf.in
 │   └── socketcan-synthetic-example.conf
 ├── docs/
 │   ├── IMX6ULL_PORTING_GUIDE.md
+│   ├── SYSTEMD_DEPLOYMENT.md
 │   └── SOCKETCAN_VIRTUAL_PLAN.md
 ├── include/car_terminal/
 │   ├── blocking_queue.h
@@ -47,6 +51,7 @@
 │   ├── cli.h
 │   ├── configuration.h
 │   ├── csv_recorder.h
+│   ├── file_rotation.h
 │   ├── logger.h
 │   ├── monitoring_service.h
 │   ├── run_mode.h
@@ -62,6 +67,7 @@
 │   ├── configuration.cpp
 │   ├── cli.cpp
 │   ├── csv_recorder.cpp
+│   ├── file_rotation.cpp
 │   ├── logger.cpp
 │   ├── monitoring_service.cpp
 │   ├── sample_processor.cpp
@@ -70,6 +76,12 @@
 │   ├── socket_can_receiver.cpp
 │   ├── socket_can_source.cpp
 │   └── status_checker.cpp
+├── packaging/systemd/
+│   ├── imx6ull-car-terminal.service.in
+│   └── socketcan-capability.conf
+├── scripts/
+│   ├── install-systemd.sh
+│   └── uninstall-systemd.sh
 ├── tests/
 │   ├── test_configuration.cpp
 │   ├── test_blocking_queue.cpp
@@ -81,6 +93,8 @@
 │   ├── test_signal_shutdown.sh
 │   ├── test_socket_can.cpp
 │   ├── test_status.cpp
+│   ├── test_systemd_scripts.sh
+│   ├── test_systemd_unit.sh
 │   ├── test_support.h
 │   ├── test_threading.cpp
 │   ├── test_vcan_integration.sh
@@ -100,6 +114,7 @@
 6. `SampleProcessor` 在消费线程中显示数据，调用日志模块并写入 CSV。
 7. `SocketCanReceiver` 仅负责 Linux socket、过滤、超时及原始帧边界；`CanVehicleDataParser` 仅负责配置映射和数值转换。
 8. `SocketCanDataSource` 在接收超时后继续等待，并通过通用 `AcquisitionStopped` 与现有监控线程协作退出。
+9. `file_rotation` 以同文件系统 rename 移动归档；Logger 和 CsvRecorder 在各自互斥锁内完成检查、轮转和完整记录写入。
 
 ```text
 VehicleSimulator (producer thread)
@@ -206,9 +221,15 @@ cmake --install build_install
 install-root/bin/car_terminal
 install-root/etc/imx6ull-car-terminal/continuous-simulator-example.conf
 install-root/etc/imx6ull-car-terminal/default.conf
+install-root/etc/imx6ull-car-terminal/systemd.conf
 install-root/etc/imx6ull-car-terminal/socketcan-synthetic-example.conf
+install-root/lib/systemd/system/imx6ull-car-terminal.service
+install-root/share/imx6ull-car-terminal/scripts/install-systemd.sh
+install-root/share/imx6ull-car-terminal/scripts/uninstall-systemd.sh
+install-root/share/imx6ull-car-terminal/systemd/socketcan-capability.conf
 install-root/share/doc/imx6ull-car-terminal/README.md
 install-root/share/doc/imx6ull-car-terminal/IMX6ULL_PORTING_GUIDE.md
+install-root/share/doc/imx6ull-car-terminal/SYSTEMD_DEPLOYMENT.md
 install-root/share/doc/imx6ull-car-terminal/SOCKETCAN_VIRTUAL_PLAN.md
 ```
 
@@ -220,6 +241,18 @@ install-root/share/doc/imx6ull-car-terminal/SOCKETCAN_VIRTUAL_PLAN.md
 ```
 
 首次运行会在同一安装前缀的 `var/log/imx6ull-car-terminal/` 和 `var/lib/imx6ull-car-terminal/` 下创建日志和 CSV。系统级安装时必须为运行用户配置这些目录的写权限。
+
+### systemd（可选）
+
+systemd 部署使用独立的连续模拟配置，不改变 `default.conf` 的 finite 默认行为。先完成 CMake 安装，再运行安装脚本；脚本默认不启动服务，也不授予 capability：
+
+```bash
+sudo /usr/local/share/imx6ull-car-terminal/scripts/install-systemd.sh --enable
+sudo systemctl start imx6ull-car-terminal.service
+sudo systemctl status imx6ull-car-terminal.service
+```
+
+服务以 `car-terminal` 用户运行，使用 `StateDirectory`/`LogsDirectory` 管理可写目录，异常退出采用 `Restart=on-failure`，停止使用 SIGTERM 和现有队列排空路径。SocketCAN 可按需用 `--socketcan` 安装只包含 `CAP_NET_RAW` 的 drop-in；模拟模式不获得该权限。完整操作和卸载行为见 [docs/SYSTEMD_DEPLOYMENT.md](docs/SYSTEMD_DEPLOYMENT.md)。当前 WSL2 只完成静态 unit 和临时安装根测试，没有实际启动 systemd 服务。
 
 ## 配置文件
 
@@ -234,11 +267,14 @@ install-root/share/doc/imx6ull-car-terminal/SOCKETCAN_VIRTUAL_PLAN.md
 | `sample_count` | `finite` 的总采样次数；连续模式仍解析但不作为停止条件 | 10 |
 | `sampling_interval_ms` | 采样间隔（毫秒） | 100 |
 | `queue_capacity` | 生产者—消费者队列容量 | 4 |
+| `log_max_size_bytes` | 活动日志文件软上限（字节） | 10485760 |
+| `csv_max_size_bytes` | 活动 CSV 文件软上限（字节） | 52428800 |
+| `rotated_file_count` | 每种输出保留的轮转文件数，范围 1–100 | 5 |
 | `log_file` | 日志路径 | `../runtime/car_terminal.log` |
 | `csv_file` | CSV 路径 | `../runtime/vehicle_data.csv` |
 | `data_source` | `simulator` 或 `socketcan` | `simulator` |
 
-相对输出路径相对于配置文件所在目录解析，而不是相对于可执行文件。配置解析器会拒绝未知键、重复键、缺失键、非数字值和不合理范围。旧配置没有 `run_mode` 时保持有限次数运行，不会意外变为常驻进程。
+相对输出路径相对于配置文件所在目录解析，而不是相对于可执行文件。配置解析器会拒绝未知键、重复键、缺失键、非数字值和不合理范围。旧配置没有 `run_mode` 时保持有限次数运行；旧配置没有三个轮转键时自动使用表中默认值。
 
 ## SocketCAN 配置与运行
 
@@ -269,7 +305,7 @@ format:id:byte_offset:byte_length:byte_order:value_type:scale:value_offset
 [config/socketcan-synthetic-example.conf](config/socketcan-synthetic-example.conf) 仅定义用于软件/vcan 测试的合成 `0x123` 帧，不代表任何真实车辆协议。运行方式：
 
 ```bash
-./build_v24/car_terminal \
+./build_v26/car_terminal \
   --config config/socketcan-synthetic-example.conf
 ```
 
@@ -278,7 +314,7 @@ format:id:byte_offset:byte_length:byte_order:value_type:scale:value_offset
 若系统已经存在可用的 `vcan0`，可运行：
 
 ```bash
-ctest --test-dir build_v24 -R vcan --output-on-failure -V
+ctest --test-dir build_v26 -R vcan --output-on-failure -V
 ```
 
 测试会发送合成帧并验证过滤、超时等待、解析和 CSV；若 `vcan0` 不存在则返回 CTest skip code 77，必须记录为“未执行”。项目不会自动创建接口、加载模块或安装 can-utils。
@@ -296,7 +332,9 @@ ctest --test-dir build_v24 -R vcan --output-on-failure -V
 - `runtime/car_terminal.log`：追加写入的 INFO/WARNING/ERROR 日志。
 - `runtime/vehicle_data.csv`：每次运行重新创建，包含表头和本次全部样本。
 
-模块会创建缺失的父目录。目录创建、文件打开或文件写入失败会抛出带路径的明确错误；程序会记录能够记录的 ERROR 信息并返回非零状态码。
+活动文件在“当前大小 + 下一条完整记录”超过阈值前轮转：原文件原子 rename 为 `.1`，已有归档依次移动为 `.2`、`.3`，超过 `rotated_file_count` 的最旧文件被删除。CSV 新活动文件会先写标准表头。单条记录本身大于阈值时允许该活动文件暂时超过阈值，下一条记录前再轮转，因此阈值是软上限而不会拆分日志行或 CSV 行。这里没有使用 copytruncate。
+
+检查、rename、重建和完整记录写入都位于模块互斥锁内。目录创建、文件检查、删除、重命名、打开、刷新或写入失败会抛出带路径的明确错误并停止运行，不会静默忽略失败。
 
 ## 自动化测试范围
 
@@ -309,6 +347,8 @@ ctest --test-dir build_v24 -R vcan --output-on-failure -V
 - finite 次数兼容、continuous 持续采样、信号停止和连续模式异常退出。
 - 满队列生产者和空队列消费者在关闭时被唤醒，以及关闭后队列数据的排空。
 - 并发日志/CSV 完整性、真实写失败、生产者异常和命令行解析。
+- 日志/CSV 多次轮转、保留数量、CSV 新表头、轮转失败和并发轮转数据完整性。
+- systemd unit 指令、`systemd-analyze verify` 以及临时根目录安装/卸载行为。
 - 正常监测完成、SIGINT/SIGTERM 标志记录、信号停止后的已采集样本排空。
 - 进程级 SIGINT/SIGTERM 测试：连续模式越过有限样本数、退出码、队列排空、停止日志及 CSV/日志样本数一致性。
 - 标准/扩展 CAN ID、过滤器、DLC、大小端、有符号转换、缩放/偏移、溢出和多帧完整性。
@@ -332,8 +372,9 @@ TSan 和 vcan 作业都没有设置 `continue-on-error`，检测或环境准备�
 - 没有 UART、I2C、SPI、GPIO 或真实传感器接口。
 - 没有在 ARM 或 i.MX6ULL 开发板上交叉编译、部署或实机验证。
 - `std::thread` 调度不是硬实时，采样间隔不能作为实时保证。
-- CSV 每次运行覆盖，日志则追加；生产系统通常还需要轮转、存储上限和掉电保护。
-- 连续模式本身不限制日志和 CSV 大小；长期部署必须配置容量监控、轮转或保留策略。
+- CSV 每次进程启动仍重新创建；大小轮转不等同于掉电保护或事务存储。
+- 轮转限制单个文件和归档数量，但磁盘写满、底层文件系统损坏及归档被外部程序占用仍会使进程明确失败。
+- systemd 支持是可选部署模板；当前 WSL2 未实际启动服务，非 systemd 发行版需要使用自己的 init 管理方式。
 - CSV 使用系统墙钟记录 UTC 时间；系统校时可能让相邻时间戳不单调，样本顺序应以 `sample` 字段为准。
 - 模拟器数值固定递增/递减，不代表任何真实车辆模型。
 - 信号停止无法抢占永久阻塞的采集回调；未来硬件数据源必须提供读取超时。
@@ -347,9 +388,17 @@ TSan 和 vcan 作业都没有设置 `continue-on-error`，检测或环境准备�
 2. 复用 `MonitoringService::AcquireFunction` 采集注入边界，把硬件适配器绑定为采集回调；只有出现多个复杂数据源时再引入虚基类接口。
 3. 按实际硬件方案接入 SocketCAN、UART、I2C/SPI 或 sysfs/libgpiod，并为设备 I/O 设置超时和重连。
 4. 在开发板上验证线程、文件系统、时钟、异常退出和长时间运行，不把 x86 测试结果当作实机结果。
-5. 根据部署需求增加 systemd 服务、日志轮转、只读根文件系统适配和交叉平台 CI。
+5. 在目标发行版上验证 systemd 或其他 init 集成、只读根文件系统适配和交叉平台 CI。
 
 SocketCAN 使用方法、合成帧格式、vcan 前置条件和验收边界见 [docs/SOCKETCAN_VIRTUAL_PLAN.md](docs/SOCKETCAN_VIRTUAL_PLAN.md)。当前环境没有 `vcan0`，所以只完成了构建、纯解析/替身单元测试和不存在接口错误路径验证，未完成真实 socket 收发集成验证。
+
+## V2.6 相对于 V2.5
+
+- 新增日志和 CSV 大小轮转、归档保留上限、CSV 表头重建及明确 I/O 错误传播。
+- 轮转与写入共享模块内互斥锁，不使用 copytruncate，并增加并发完整性测试。
+- 新增非 root systemd unit、连续模拟服务配置、异常重启策略和安全停止设置。
+- SocketCAN capability 通过可选 drop-in 单独授予，默认模拟服务不获得网络能力。
+- 新增临时根安装/卸载测试和 systemd 静态验证；未声称完成目标板服务启动。
 
 ## V2.5 相对于 V2.4
 

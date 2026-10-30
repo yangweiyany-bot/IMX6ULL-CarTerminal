@@ -1,0 +1,21 @@
+# IMX6ULL-CarTerminal systemd simulation configuration.
+# This service profile is continuous and uses generated data only. Alarm
+# thresholds are demonstrations, not vehicle diagnostic or safety standards.
+data_source=simulator
+run_mode=continuous
+
+low_voltage_threshold_v=12.55
+high_temperature_threshold_c=40.0
+overspeed_threshold_kmh=120.0
+
+# Required for configuration compatibility; continuous mode stops by signal.
+sample_count=10
+sampling_interval_ms=100
+queue_capacity=4
+
+log_max_size_bytes=10485760
+csv_max_size_bytes=52428800
+rotated_file_count=5
+
+log_file=@CAR_TERMINAL_SYSTEMD_LOG_FILE@
+csv_file=@CAR_TERMINAL_SYSTEMD_CSV_FILE@

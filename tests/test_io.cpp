@@ -13,6 +13,32 @@
 #include <thread>
 #include <vector>
 
+namespace {
+
+std::vector<std::filesystem::path> rotationFiles(
+    const std::filesystem::path& active,
+    const std::size_t maximumGeneration) {
+    std::vector<std::filesystem::path> files;
+    if (std::filesystem::exists(active)) {
+        files.push_back(active);
+    }
+    for (std::size_t generation = 1; generation <= maximumGeneration;
+         ++generation) {
+        const auto path = car_terminal::rotatedFilePath(active, generation);
+        if (std::filesystem::exists(path)) {
+            files.push_back(path);
+        }
+    }
+    return files;
+}
+
+std::size_t lineCount(const std::string& content) {
+    return static_cast<std::size_t>(
+        std::count(content.begin(), content.end(), '\n'));
+}
+
+}  // namespace
+
 void runIoTests(test_support::TestSuite& suite) {
     using namespace test_support;
 
@@ -70,6 +96,85 @@ void runIoTests(test_support::TestSuite& suite) {
                 "CSV file should be reusable after recorder destruction");
     });
 
+    suite.run("logger rotates repeatedly and enforces retention", [] {
+        TempDirectory temp;
+        const auto path = temp.path() / "rotation/app.log";
+        std::ostringstream console;
+        {
+            car_terminal::Logger logger(path, console, {240, 2});
+            for (int line = 0; line < 40; ++line) {
+                logger.log(car_terminal::LogLevel::Info,
+                           "rotation-line=" + std::to_string(line) +
+                               " payload=abcdefghijklmnopqrstuvwxyz");
+            }
+        }
+
+        require(std::filesystem::exists(path),
+                "active log should be recreated after rotation");
+        require(std::filesystem::exists(
+                    car_terminal::rotatedFilePath(path, 1)),
+                "newest log archive should exist");
+        require(std::filesystem::exists(
+                    car_terminal::rotatedFilePath(path, 2)),
+                "second log archive should exist");
+        require(!std::filesystem::exists(
+                    car_terminal::rotatedFilePath(path, 3)),
+                "archives beyond retention must not exist");
+        require(readText(path).find("rotation-line=39") != std::string::npos,
+                "active log should contain the newest record");
+        require(readText(car_terminal::rotatedFilePath(path, 2))
+                        .find("rotation-line=0") == std::string::npos,
+                "oldest records should be removed after retention is exceeded");
+        for (const auto& file : rotationFiles(path, 2)) {
+            const auto content = readText(file);
+            require(!content.empty(), "rotated log file should not be empty");
+            std::istringstream input(content);
+            std::string line;
+            while (std::getline(input, line)) {
+                require(!line.empty() && line.front() == '[' &&
+                            line.find("] [INFO] ") != std::string::npos,
+                        "each retained log record should remain a full line");
+            }
+        }
+    });
+
+    suite.run("CSV rotation recreates headers without losing rows", [] {
+        TempDirectory temp;
+        const auto path = temp.path() / "rotation/data.csv";
+        constexpr std::size_t kRows = 18;
+        {
+            car_terminal::CsvRecorder recorder(path, {230, 20});
+            for (std::size_t sample = 1; sample <= kRows; ++sample) {
+                recorder.record({sample, {}, 80.0, 35.0, 12.8},
+                                {false, false, false});
+            }
+        }
+
+        const auto files = rotationFiles(path, 20);
+        require(files.size() > std::size_t{1},
+                "CSV should rotate more than once at a small threshold");
+        std::size_t rows = 0;
+        for (const auto& file : files) {
+            std::istringstream input(readText(file));
+            std::string line;
+            require(static_cast<bool>(std::getline(input, line)),
+                    "each CSV file should contain a header");
+            requireEqual(
+                line,
+                std::string(
+                    "sample,timestamp_utc,speed_kmh,temperature_c,voltage_v,status"),
+                "each rotated CSV file should start with the standard header");
+            while (std::getline(input, line)) {
+                ++rows;
+                requireEqual(std::count(line.begin(), line.end(), ','),
+                             std::ptrdiff_t{5},
+                             "each rotated CSV row should be complete");
+            }
+        }
+        requireEqual(rows, kRows,
+                     "rotation must preserve every recorded CSV row");
+    });
+
     suite.run("logger reports file-open failure", [] {
         TempDirectory temp;
         std::ostringstream console;
@@ -85,12 +190,12 @@ void runIoTests(test_support::TestSuite& suite) {
             "Cannot open CSV file");
     });
 
-    suite.run("logger serializes concurrent writers", [] {
+    suite.run("logger serializes concurrent writers across rotations", [] {
         TempDirectory temp;
         const auto path = temp.path() / "concurrent.log";
         std::ostringstream console;
         {
-            car_terminal::Logger logger(path, console);
+            car_terminal::Logger logger(path, console, {500, 100});
             std::vector<std::thread> writers;
             for (int thread = 0; thread < 8; ++thread) {
                 writers.emplace_back([&, thread] {
@@ -105,17 +210,19 @@ void runIoTests(test_support::TestSuite& suite) {
                 writer.join();
             }
         }
-        const auto content = readText(path);
-        requireEqual(std::count(content.begin(), content.end(), '\n'),
-                     std::ptrdiff_t{200},
-                     "concurrent log line count");
+        std::size_t lines = 0;
+        for (const auto& file : rotationFiles(path, 100)) {
+            lines += lineCount(readText(file));
+        }
+        requireEqual(lines, std::size_t{200},
+                     "concurrent rotated log line count");
     });
 
-    suite.run("CSV recorder preserves concurrent rows", [] {
+    suite.run("CSV recorder preserves concurrent rows across rotations", [] {
         TempDirectory temp;
         const auto path = temp.path() / "concurrent.csv";
         {
-            car_terminal::CsvRecorder recorder(path);
+            car_terminal::CsvRecorder recorder(path, {320, 100});
             std::vector<std::thread> writers;
             for (std::size_t thread = 0; thread < 4; ++thread) {
                 writers.emplace_back([&, thread] {
@@ -132,17 +239,81 @@ void runIoTests(test_support::TestSuite& suite) {
             }
         }
 
-        std::istringstream input(readText(path));
-        std::string line;
-        std::size_t lines = 0;
-        while (std::getline(input, line)) {
-            ++lines;
-            requireEqual(std::count(line.begin(), line.end(), ','),
-                         std::ptrdiff_t{5},
-                         "each CSV row should contain six fields");
+        std::size_t rows = 0;
+        for (const auto& file : rotationFiles(path, 100)) {
+            std::istringstream input(readText(file));
+            std::string line;
+            require(static_cast<bool>(std::getline(input, line)),
+                    "rotated CSV should have a header");
+            require(line.find("sample,timestamp_utc") == 0,
+                    "rotated CSV header missing");
+            while (std::getline(input, line)) {
+                ++rows;
+                requireEqual(std::count(line.begin(), line.end(), ','),
+                             std::ptrdiff_t{5},
+                             "each CSV row should contain six fields");
+            }
         }
-        requireEqual(lines, std::size_t{101},
-                     "CSV should contain header and 100 rows");
+        requireEqual(rows, std::size_t{100},
+                     "rotated CSV should preserve all 100 rows");
+    });
+
+    suite.run("log rotation reports archive removal failure", [] {
+        TempDirectory temp;
+        const auto path = temp.path() / "failure/app.log";
+        const auto archive = car_terminal::rotatedFilePath(path, 1);
+        std::filesystem::create_directories(archive);
+        writeText(archive / "blocker", "not removable as one file");
+        std::ostringstream console;
+        car_terminal::Logger logger(path, console, {1, 1});
+        logger.log(car_terminal::LogLevel::Info, "first line");
+        requireThrows<std::runtime_error>(
+            [&] { logger.log(car_terminal::LogLevel::Info, "second line"); },
+            "Cannot remove oldest rotated file");
+    });
+
+    suite.run("CSV rotation reports archive removal failure", [] {
+        TempDirectory temp;
+        const auto path = temp.path() / "failure/data.csv";
+        const auto archive = car_terminal::rotatedFilePath(path, 1);
+        std::filesystem::create_directories(archive);
+        writeText(archive / "blocker", "not removable as one file");
+        car_terminal::CsvRecorder recorder(path, {1, 1});
+        recorder.record({1, {}, 80.0, 35.0, 12.8},
+                        {false, false, false});
+        requireThrows<std::runtime_error>(
+            [&] {
+                recorder.record({2, {}, 80.0, 35.0, 12.8},
+                                {false, false, false});
+            },
+            "Cannot remove oldest rotated file");
+    });
+
+    suite.run("log rotation reports rename failure", [] {
+        TempDirectory temp;
+        const auto directory = temp.path() / "rename-failure";
+        const auto path = directory / "app.log";
+        std::ostringstream console;
+        car_terminal::Logger logger(path, console, {1, 1});
+        logger.log(car_terminal::LogLevel::Info, "first line");
+        std::filesystem::permissions(
+            directory,
+            std::filesystem::perms::owner_read |
+                std::filesystem::perms::owner_exec,
+            std::filesystem::perm_options::replace);
+        bool reportedRenameFailure = false;
+        try {
+            logger.log(car_terminal::LogLevel::Info, "second line");
+        } catch (const std::runtime_error& error) {
+            reportedRenameFailure =
+                std::string(error.what()).find("Cannot rotate file") !=
+                std::string::npos;
+        }
+        std::filesystem::permissions(
+            directory, std::filesystem::perms::owner_all,
+            std::filesystem::perm_options::replace);
+        require(reportedRenameFailure,
+                "rename failure should include a clear rotation error");
     });
 
     suite.run("logger reports write failure", [] {

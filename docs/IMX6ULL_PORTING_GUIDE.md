@@ -4,7 +4,7 @@
 
 ## 当前验证边界
 
-V2.2 已在 Ubuntu 24.04 / WSL2 的 x86-64 Linux 用户空间完成主机端验证。V2.3 增加安全信号退出与 CI 配置；V2.4 增加 Linux SocketCAN 经典 CAN 接收、显式信号映射和可选 vcan 集成测试；V2.5 增加有限次数与连续监控两种运行模式。本地验证结果以 README 和对应交付报告为准，GitHub Actions 在实际运行前不能标记为通过。
+V2.2 已在 Ubuntu 24.04 / WSL2 的 x86-64 Linux 用户空间完成主机端验证。V2.3 增加安全信号退出与 CI 配置；V2.4 增加 Linux SocketCAN；V2.5 增加有限次数与连续监控；V2.6 增加大小轮转和可选 systemd 部署模板。本地验证结果以 README 和对应交付报告为准，GitHub Actions 在实际运行前不能标记为通过。
 
 V2.4 当前主机没有 `vcan0`，也没有 `candump`/`cansend`，因此 vcan 测试被测试框架明确标记为跳过。纯解析、接收器替身、超时/停止协作和不存在接口初始化失败可以在不依赖 CAN 硬件时验证；这些结果不能替代真实 socket、物理总线或目标板验证。
 
@@ -46,6 +46,7 @@ i.MX6ULL 通常是 32 位 ARMv7-A/Cortex-A7 平台，但最终 ABI、编译选�
 - C++17 filesystem 支持；
 - Linux SocketCAN UAPI 头文件和启用了 CAN 子系统的目标内核（仅在使用 `data_source=socketcan` 时需要）；
 - 可写的日志和 CSV 目录；
+- 支持同一文件系统内原子 rename 的持久化目录，供大小轮转使用；
 - `localtime_r`、`gmtime_r` 和正常工作的系统墙钟。
 
 模拟采集和 `SocketCanDataSource` 都通过 `MonitoringService::AcquireFunction` 注入，无需修改状态判断、日志、CSV 或线程调度。V2.5 的连续模式只改变监控循环边界，不改变采集接口。未来其他硬件适配器也应保持这条边界；除非实际出现多个复杂数据源和生命周期需求，否则无需先引入虚基类层次。
@@ -88,7 +89,9 @@ DESTDIR="$PWD/stage-arm" cmake --install build-arm
 ```text
 /usr/bin/car_terminal
 /etc/imx6ull-car-terminal/default.conf
+/etc/imx6ull-car-terminal/systemd.conf
 /etc/imx6ull-car-terminal/socketcan-synthetic-example.conf
+/usr/lib/systemd/system/imx6ull-car-terminal.service # 仅 systemd 系统
 /usr/share/doc/imx6ull-car-terminal/README.md
 /usr/share/doc/imx6ull-car-terminal/IMX6ULL_PORTING_GUIDE.md
 /usr/share/doc/imx6ull-car-terminal/SOCKETCAN_VIRTUAL_PLAN.md
@@ -98,7 +101,7 @@ DESTDIR="$PWD/stage-arm" cmake --install build-arm
 
 实际目录会受到 BSP 的 GNUInstallDirs 设置影响。安装版配置使用相对路径连接配置目录与 local-state 目录，因此也支持非 `/usr` 的测试前缀。
 
-部署前必须确保运行用户能够创建或写入日志和 CSV 目录。生产系统还应配置日志轮转、存储容量和掉电恢复策略。
+部署前必须确保运行用户能够创建或写入日志和 CSV 目录。V2.6 已提供进程内大小轮转和归档保留上限；目标系统仍需验证磁盘容量、掉电恢复和文件系统耐久性。
 
 ## 部署和运行
 
@@ -112,6 +115,8 @@ DESTDIR="$PWD/stage-arm" cmake --install build-arm
 ```
 
 在接入真实硬件之前，仍应先运行模拟配置，确认 C++ 运行库、线程、文件权限、时钟和进程退出正常。
+
+若目标发行版使用 systemd，可使用仓库的 unit 和安装脚本；默认服务以 `car-terminal` 非 root 用户运行并使用连续模拟配置。只有 SocketCAN 模式才按需安装 `CAP_NET_RAW` drop-in。非 systemd BSP 应把相同的 SIGTERM、重启、用户和目录权限策略转换为其 init 机制。详细步骤见 [SYSTEMD_DEPLOYMENT.md](SYSTEMD_DEPLOYMENT.md)。
 
 切换 SocketCAN 前还必须由板卡/BSP 文档确认 CAN 控制器驱动、设备树、管脚复用、收发器、电气终端、位时序和接口启动方式。项目只接受已经存在且处于可用状态的 Linux CAN 网络接口；它不会加载内核模块、创建设备或配置波特率。示例映射只用于合成测试，不得部署为车辆协议。
 
@@ -127,6 +132,8 @@ DESTDIR="$PWD/stage-arm" cmake --install build-arm
 - 日志和 CSV 目录权限正确，重启后行为符合预期。
 - 系统时间未同步时的时间戳行为被接受或有明确处理策略。
 - 评估连续运行的日志/CSV 增长、磁盘空间不足、轮转、掉电恢复和最长预期运行时间。
+- 用小阈值触发多次轮转，确认 `.1` 为最新归档、保留数量正确且每个 CSV 都有表头。
+- 若使用 systemd，确认非 root 用户、目录所有权、SIGTERM 排空、异常重启和可选 SocketCAN capability。
 - SIGINT/SIGTERM 停止会排空已入队数据、刷新文件并以约定状态码退出。
 - 真正的数据源适配器有超时、错误传播、断线重试和输入范围校验。
 - SocketCAN 接口名称、标准/扩展帧过滤、接收超时、错误帧/RTR/短帧处理均在目标内核上重新验证。
@@ -141,3 +148,4 @@ SocketCAN 使用与虚拟总线验收指南见 [SOCKETCAN_VIRTUAL_PLAN.md](SOCKE
 - 未声称已通过 i.MX6ULL 实机测试。
 - 未选择 Yocto、Buildroot、Debian 或厂商 BSP；这些必须由目标项目决定。
 - 未提供硬实时保证或功能安全认证。
+- WSL2 仅完成 systemd unit 静态验证和临时根脚本测试，未替代目标发行版的服务启动验证。

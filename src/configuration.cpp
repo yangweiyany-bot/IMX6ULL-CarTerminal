@@ -243,6 +243,8 @@ bool pathsReferToSameFile(const std::filesystem::path& left,
 }
 
 void validateConfig(const AppConfig& config) {
+    constexpr std::uintmax_t kMaximumManagedFileSize =
+        std::uintmax_t{1} << 40;
     if (config.thresholds.lowVoltageV <= 0.0 ||
         config.thresholds.lowVoltageV > 100.0) {
         throw ConfigError("low_voltage_threshold_v must be in (0, 100]");
@@ -266,6 +268,20 @@ void validateConfig(const AppConfig& config) {
     if (config.queueCapacity == 0 || config.queueCapacity > 10000) {
         throw ConfigError("queue_capacity must be in [1, 10000]");
     }
+    if (config.logMaxSizeBytes == 0 ||
+        config.logMaxSizeBytes > kMaximumManagedFileSize) {
+        throw ConfigError(
+            "log_max_size_bytes must be in [1, 1099511627776]");
+    }
+    if (config.csvMaxSizeBytes == 0 ||
+        config.csvMaxSizeBytes > kMaximumManagedFileSize) {
+        throw ConfigError(
+            "csv_max_size_bytes must be in [1, 1099511627776]");
+    }
+    if (config.rotatedFileCount == 0 ||
+        config.rotatedFileCount > 100) {
+        throw ConfigError("rotated_file_count must be in [1, 100]");
+    }
 }
 
 }  // namespace
@@ -285,6 +301,9 @@ AppConfig loadConfig(const std::filesystem::path& configPath) {
         "sample_count",
         "sampling_interval_ms",
         "queue_capacity",
+        "log_max_size_bytes",
+        "csv_max_size_bytes",
+        "rotated_file_count",
         "log_file",
         "csv_file",
         "data_source",
@@ -368,6 +387,21 @@ AppConfig loadConfig(const std::filesystem::path& configPath) {
         std::chrono::milliseconds(static_cast<long long>(interval));
     config.queueCapacity = parseSize(
         "queue_capacity", requireValue(values, "queue_capacity"));
+
+    const auto optionalSize = [&values](const std::string& key,
+                                        const std::size_t fallback) {
+        const auto entry = values.find(key);
+        return entry == values.end() ? fallback
+                                     : parseSize(key, entry->second);
+    };
+    config.logMaxSizeBytes = optionalSize(
+        "log_max_size_bytes",
+        static_cast<std::size_t>(kDefaultLogMaxSizeBytes));
+    config.csvMaxSizeBytes = optionalSize(
+        "csv_max_size_bytes",
+        static_cast<std::size_t>(kDefaultCsvMaxSizeBytes));
+    config.rotatedFileCount = optionalSize(
+        "rotated_file_count", kDefaultRotatedFileCount);
 
     const auto dataSource = values.find("data_source");
     const std::string dataSourceValue =

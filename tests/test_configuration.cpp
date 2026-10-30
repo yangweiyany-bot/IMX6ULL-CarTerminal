@@ -68,8 +68,48 @@ void runConfigurationTests(test_support::TestSuite& suite) {
                 "omitted data source should preserve simulator compatibility");
         require(config.runMode == car_terminal::RunMode::Finite,
                 "omitted run mode should preserve finite compatibility");
+        requireEqual(config.logMaxSizeBytes,
+                     car_terminal::kDefaultLogMaxSizeBytes,
+                     "omitted log rotation size should use the default");
+        requireEqual(config.csvMaxSizeBytes,
+                     car_terminal::kDefaultCsvMaxSizeBytes,
+                     "omitted CSV rotation size should use the default");
+        requireEqual(config.rotatedFileCount,
+                     car_terminal::kDefaultRotatedFileCount,
+                     "omitted rotation count should use the default");
         require(!config.socketCan.has_value(),
                 "simulator configuration should not create CAN settings");
+    });
+
+    suite.run("explicit file rotation configuration", [] {
+        TempDirectory temp;
+        const auto path = temp.path() / "rotation.conf";
+        writeText(path, std::string(kValidConfig) +
+                            "log_max_size_bytes=4096\n"
+                            "csv_max_size_bytes=8192\n"
+                            "rotated_file_count=7\n");
+        const auto config = car_terminal::loadConfig(path);
+        requireEqual(config.logMaxSizeBytes, std::uintmax_t{4096},
+                     "configured log rotation size");
+        requireEqual(config.csvMaxSizeBytes, std::uintmax_t{8192},
+                     "configured CSV rotation size");
+        requireEqual(config.rotatedFileCount, std::size_t{7},
+                     "configured rotation count");
+    });
+
+    suite.run("invalid file rotation configuration", [] {
+        expectConfigError(std::string(kValidConfig) +
+                              "log_max_size_bytes=0\n",
+                          "log_max_size_bytes");
+        expectConfigError(std::string(kValidConfig) +
+                              "csv_max_size_bytes=1099511627777\n",
+                          "csv_max_size_bytes");
+        expectConfigError(std::string(kValidConfig) +
+                              "rotated_file_count=0\n",
+                          "rotated_file_count");
+        expectConfigError(std::string(kValidConfig) +
+                              "rotated_file_count=101\n",
+                          "rotated_file_count");
     });
 
     suite.run("continuous run mode configuration", [] {

@@ -25,10 +25,14 @@ int runApplication(const std::filesystem::path& configPath,
                    const car_terminal::SignalHandler& signals) {
     const car_terminal::AppConfig config =
         car_terminal::loadConfig(configPath);
-    car_terminal::Logger logger(config.logFile, std::cout);
+    car_terminal::Logger logger(
+        config.logFile, std::cout,
+        {config.logMaxSizeBytes, config.rotatedFileCount});
 
     try {
-        car_terminal::CsvRecorder recorder(config.csvFile);
+        car_terminal::CsvRecorder recorder(
+            config.csvFile,
+            {config.csvMaxSizeBytes, config.rotatedFileCount});
         car_terminal::VehicleSimulator simulator;
         std::unique_ptr<car_terminal::SocketCanReceiver> canReceiver;
         std::unique_ptr<car_terminal::CanVehicleDataParser> canParser;
