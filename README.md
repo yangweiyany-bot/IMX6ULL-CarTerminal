@@ -174,6 +174,12 @@ cmake --build build_v27 --verbose
 ctest --test-dir build_v27 --output-on-failure
 ```
 
+本仓库于 2026-11-06 在上述 WSL2 Ubuntu 24.04 环境中使用全新的
+Debug 构建目录复核：CMake 配置和 Ninja 构建成功；C++ 测试程序共
+81 项通过、0 项失败；CTest 共注册 6 项，其中 5 项通过、0 项失败、
+1 项因环境中没有 `vcan0` 而跳过。该结果不包含 Release、Sanitizer、
+GitHub Actions、真实 SocketCAN、ARM 交叉编译或 i.MX6ULL 实机验证。
+
 运行：
 
 ```bash
@@ -328,7 +334,7 @@ format:id:byte_offset:byte_length:byte_order:value_type:scale:value_offset
 [config/socketcan-synthetic-example.conf](config/socketcan-synthetic-example.conf) 仅定义用于软件/vcan 测试的合成 `0x123` 帧，不代表任何真实车辆协议。运行方式：
 
 ```bash
-./build_v26/car_terminal \
+./build_v27/car_terminal \
   --config config/socketcan-synthetic-example.conf
 ```
 
@@ -337,7 +343,7 @@ format:id:byte_offset:byte_length:byte_order:value_type:scale:value_offset
 若系统已经存在可用的 `vcan0`，可运行：
 
 ```bash
-ctest --test-dir build_v26 -R vcan --output-on-failure -V
+ctest --test-dir build_v27 -R vcan --output-on-failure -V
 ```
 
 测试会发送合成帧并验证过滤、超时等待、解析和 CSV；若 `vcan0` 不存在则返回 CTest skip code 77，必须记录为“未执行”。项目不会自动创建接口、加载模块或安装 can-utils。

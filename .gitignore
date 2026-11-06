@@ -2,11 +2,30 @@
 build/
 build*/
 cmake-build-*/
+install-root/
 install_imx6ull*/
+stage-arm/
+stage-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+compile_commands.json
+install_manifest.txt
+*.ninja
+.ninja_*
 /car_terminal
 *.o
 *.a
 *.so
+*.d
+*.gcda
+*.gcno
+*.profraw
+*.profdata
+core
+core.*
 
 # Runtime outputs
 runtime/
@@ -15,11 +34,53 @@ runtime/
 *.log.*
 *.csv.*
 
-# Editor and temporary files
+# Local credentials and private configuration
+.env
+.env.*
+!.env.example
+.netrc
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+.secrets/
+.credentials/
+config/local.conf
+config/local-*.conf
+config/private.conf
+config/private-*.conf
+config/*.local.conf
+
+# Personal material kept next to the worktree
+*简历*
+*面试题*
+*笔记*
+项目概括.txt
+[Rr]esume*.doc
+[Rr]esume*.docx
+[Rr]esume*.pdf
+[Cc][Vv]*.doc
+[Cc][Vv]*.docx
+[Cc][Vv]*.pdf
+
+# OS, editor, and temporary files
+*:Zone.Identifier
+.DS_Store
+Thumbs.db
+Desktop.ini
 .vscode/
 .idea/
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+~$*
 *~
 *.swp
+*.swo
 
 # Local preservation copies
 backups/
